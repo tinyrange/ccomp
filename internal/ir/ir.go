@@ -139,6 +139,12 @@ func BuildModule(file *ast.File, m *Module) error {
         b := f.newBlock("entry")
         ctx := &buildCtx{f: f, b: b, m: m}
         ctx.initParams()
+        // Set param types from AST
+        for _, p := range fd.Params {
+            if p.Typ == ast.BTChar { ctx.varTypes[p.Name] = ty.ByteT() } else { ctx.varTypes[p.Name] = ty.Int() }
+        }
+        // Set function return type
+        if fd.Ret == ast.BTChar { ctx.retType = ty.ByteT() } else { ctx.retType = ty.Int() }
         if err := ctx.buildBlock(fd.Body); err != nil { return err }
         m.Funcs = append(m.Funcs, f)
     }
@@ -159,6 +165,7 @@ type buildCtx struct {
     varTypes map[string]ty.Type
     // interned string literal labels
     strLabels map[string]string
+    retType ty.Type
 }
 
 func (c *buildCtx) initParams() {
@@ -267,8 +274,12 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
     for _, s := range b.Stmts {
         switch s := s.(type) {
         case *ast.ReturnStmt:
-            v, _, err := c.buildExprWithType(s.Expr)
+            v, t, err := c.buildExprWithType(s.Expr)
             if err != nil { return err }
+            // simple type check: disallow pointer returns for now
+            if t.IsPointer() {
+                return fmt.Errorf("type error: returning pointer not supported")
+            }
             c.add(OpRet, v)
         case *ast.DeclStmt:
             if s.Init != nil {
@@ -294,6 +305,12 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
             }
             v, t, err := c.buildExprWithType(s.Value)
             if err != nil { return err }
+            // simple type checks for locals: pointer vs non-pointer, char vs pointer
+            if vt, ok := c.varTypes[s.Name]; ok {
+                if vt.IsPointer() != t.IsPointer() {
+                    return fmt.Errorf("type error: cannot assign %s to %s", typeStr(t), typeStr(vt))
+                }
+            }
             c.writeVar(s.Name, c.b, v)
             // update visible type
             c.varTypes[s.Name] = t
@@ -587,6 +604,20 @@ func (c *buildCtx) internString(s string) string {
     c.strLabels[s] = lbl
     c.m.StrLits = append(c.m.StrLits, StrLit{Name: lbl, Data: s})
     return lbl
+}
+
+func typeStr(t ty.Type) string {
+    if t.IsPointer() {
+        return "pointer"
+    }
+    switch t.K {
+    case ty.Int64:
+        return "int"
+    case ty.Byte:
+        return "char"
+    default:
+        return "unknown"
+    }
 }
 
 func (c *buildCtx) buildLogical(isAnd bool, left, right ast.Expr) (ValueID, error) {

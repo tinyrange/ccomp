@@ -10,6 +10,7 @@ type FuncDecl struct {
     Name string
     Params []Param
     Body *BlockStmt
+    Ret  BasicType
 }
 func (*FuncDecl) isDecl() {}
 

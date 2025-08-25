@@ -58,7 +58,7 @@ func (p *Parser) parseDecl() (ast.Decl, error) {
         if _, err = p.expect(lexer.RPAREN); err != nil { return nil, err }
         body, err := p.parseBlock()
         if err != nil { return nil, err }
-        return &ast.FuncDecl{Name: nameTok.Lex, Params: params, Body: body}, nil
+        return &ast.FuncDecl{Name: nameTok.Lex, Params: params, Body: body, Ret: basict}, nil
     }
     if p.tok.Type == lexer.LBRACK {
         // global array: int NAME[N];
@@ -407,6 +407,14 @@ func (p *Parser) parseFactor() (ast.Expr, error) {
         return expr, nil
     case lexer.INT:
         v, _ := strconv.ParseInt(p.tok.Lex, 10, 64)
+        lit := &ast.IntLit{Value: v}
+        p.next()
+        return lit, nil
+    case lexer.CHAR:
+        // p.tok.Lex holds the resolved single rune
+        r := []rune(p.tok.Lex)
+        var v int64
+        if len(r) > 0 { v = int64(r[0]) }
         lit := &ast.IntLit{Value: v}
         p.next()
         return lit, nil

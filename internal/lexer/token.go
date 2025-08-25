@@ -10,6 +10,7 @@ const (
 	// Identifiers + literals
 	IDENT
 	INT
+	CHAR
 	STRING
 
 	// Keywords

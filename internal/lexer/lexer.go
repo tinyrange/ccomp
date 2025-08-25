@@ -104,6 +104,29 @@ func (l *Lexer) Next() Token {
         tok.Type, tok.Lex = CARET, string(ch); l.read()
     case '~':
         tok.Type, tok.Lex = TILDE, string(ch); l.read()
+    case '\'':
+        // character literal
+        startLine, startCol := l.line, l.col
+        l.read() // consume opening '
+        var r rune
+        if l.ch == '\\' {
+            l.read()
+            switch l.ch {
+            case 'n': r = '\n'
+            case 't': r = '\t'
+            case 'r': r = '\r'
+            case '\\': r = '\\'
+            case '\'': r = '\''
+            case '0': r = '\x00'
+            default:
+                r = l.ch
+            }
+        } else {
+            r = l.ch
+        }
+        if l.ch != 0 { l.read() }
+        if l.ch == '\'' { l.read() } // consume closing '
+        return Token{Type: CHAR, Lex: string([]rune{r}), Line: startLine, Col: startCol}
     default:
         if ch == '"' {
             // string literal
