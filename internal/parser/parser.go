@@ -37,9 +37,13 @@ func (p *Parser) expect(tt lexer.TokenType) (lexer.Token, error) {
 }
 
 func (p *Parser) parseDecl() (ast.Decl, error) {
-    // Either: int IDENT(params) { ... }  OR  int [*]* IDENT [= INT] ;  (global)
-    if p.tok.Type != lexer.KW_INT {
-        return nil, fmt.Errorf("only 'int' functions supported at %d:%d", p.tok.Line, p.tok.Col)
+    // Either: <type> IDENT(params) { ... }  OR  <type> [*]* IDENT [= INT] ;  (global)
+    // We currently support int and char
+    basict := ast.BTInt
+    if p.tok.Type == lexer.KW_CHAR {
+        basict = ast.BTChar
+    } else if p.tok.Type != lexer.KW_INT {
+        return nil, fmt.Errorf("only 'int'/'char' globals/functions supported at %d:%d", p.tok.Line, p.tok.Col)
     }
     p.next()
     // optional pointer stars for global decls (ignored for now)
@@ -56,6 +60,16 @@ func (p *Parser) parseDecl() (ast.Decl, error) {
         if err != nil { return nil, err }
         return &ast.FuncDecl{Name: nameTok.Lex, Params: params, Body: body}, nil
     }
+    if p.tok.Type == lexer.LBRACK {
+        // global array: int NAME[N];
+        p.next()
+        szTok, err := p.expect(lexer.INT)
+        if err != nil { return nil, err }
+        if _, err := p.expect(lexer.RBRACK); err != nil { return nil, err }
+        if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
+        v, _ := strconv.ParseInt(szTok.Lex, 10, 64)
+        return &ast.GlobalArrayDecl{Name: nameTok.Lex, Size: int(v), Elem: basict}, nil
+    }
     // global variable
     var init *ast.IntLit
     if p.tok.Type == lexer.ASSIGN {
@@ -66,7 +80,7 @@ func (p *Parser) parseDecl() (ast.Decl, error) {
         p.next()
     }
     if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
-    return &ast.GlobalDecl{Name: nameTok.Lex, Init: init}, nil
+    return &ast.GlobalDecl{Name: nameTok.Lex, Init: init, Typ: basict}, nil
 }
 
 func (p *Parser) parseParams() ([]ast.Param, error) {
@@ -75,13 +89,12 @@ func (p *Parser) parseParams() ([]ast.Param, error) {
         return params, nil
     }
     for {
-        if p.tok.Type != lexer.KW_INT {
-            return nil, fmt.Errorf("only int params supported at %d:%d", p.tok.Line, p.tok.Col)
-        }
+        bt := ast.BTInt
+        if p.tok.Type == lexer.KW_CHAR { bt = ast.BTChar } else if p.tok.Type != lexer.KW_INT { return nil, fmt.Errorf("only int/char params supported at %d:%d", p.tok.Line, p.tok.Col) }
         p.next()
         nameTok, err := p.expect(lexer.IDENT)
         if err != nil { return nil, err }
-        params = append(params, ast.Param{Name: nameTok.Lex})
+        params = append(params, ast.Param{Name: nameTok.Lex, Typ: bt})
         if p.tok.Type == lexer.COMMA { p.next(); continue }
         break
     }
@@ -108,8 +121,10 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
         if err != nil { return nil, err }
         if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
         return &ast.ReturnStmt{Expr: e}, nil
-    case lexer.KW_INT:
-        // declaration: int x; | int x = expr;
+    case lexer.KW_INT, lexer.KW_CHAR:
+        // declaration: T x; | T x = expr; | T a[N];
+        bt := ast.BTInt
+        if p.tok.Type == lexer.KW_CHAR { bt = ast.BTChar }
         p.next()
         for p.tok.Type == lexer.STAR { p.next() }
         nameTok, err := p.expect(lexer.IDENT)
@@ -122,7 +137,7 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
             if _, err := p.expect(lexer.RBRACK); err != nil { return nil, err }
             if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
             v, _ := strconv.ParseInt(szTok.Lex, 10, 64)
-            return &ast.ArrayDeclStmt{Name: nameTok.Lex, Size: int(v)}, nil
+            return &ast.ArrayDeclStmt{Name: nameTok.Lex, Size: int(v), Elem: bt}, nil
         }
         var init ast.Expr
         if p.tok.Type == lexer.ASSIGN {
@@ -131,7 +146,7 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
             if err != nil { return nil, err }
         }
         if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
-        return &ast.DeclStmt{Name: nameTok.Lex, Init: init}, nil
+        return &ast.DeclStmt{Name: nameTok.Lex, Init: init, Typ: bt}, nil
     case lexer.LBRACE:
         return p.parseBlock()
     case lexer.KW_IF:
@@ -395,12 +410,34 @@ func (p *Parser) parseFactor() (ast.Expr, error) {
         lit := &ast.IntLit{Value: v}
         p.next()
         return lit, nil
+    case lexer.STRING:
+        s := &ast.StringLit{Value: p.tok.Lex}
+        p.next()
+        // allow postfix indexing like "str"[i]
+        var expr ast.Expr = s
+        for p.tok.Type == lexer.LBRACK {
+            p.next()
+            idx, err := p.parseExpr()
+            if err != nil { return nil, err }
+            if _, err := p.expect(lexer.RBRACK); err != nil { return nil, err }
+            expr = &ast.IndexExpr{Base: expr, Index: idx}
+        }
+        return expr, nil
     case lexer.LPAREN:
         p.next()
         e, err := p.parseExpr()
         if err != nil { return nil, err }
         if _, err := p.expect(lexer.RPAREN); err != nil { return nil, err }
-        return e, nil
+        // support postfix indexing on parenthesized expressions
+        var expr ast.Expr = e
+        for p.tok.Type == lexer.LBRACK {
+            p.next()
+            idx, err := p.parseExpr()
+            if err != nil { return nil, err }
+            if _, err := p.expect(lexer.RBRACK); err != nil { return nil, err }
+            expr = &ast.IndexExpr{Base: expr, Index: idx}
+        }
+        return expr, nil
     default:
         return nil, fmt.Errorf("unexpected token %v at %d:%d", p.tok.Type, p.tok.Line, p.tok.Col)
     }

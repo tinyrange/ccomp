@@ -15,6 +15,7 @@ func (*FuncDecl) isDecl() {}
 
 type Param struct {
     Name string
+    Typ  BasicType
 }
 
 type Stmt interface{ isStmt() }
@@ -28,10 +29,10 @@ func (*ReturnStmt) isStmt() {}
 type ExprStmt struct { X Expr }
 func (*ExprStmt) isStmt() {}
 
-type DeclStmt struct { Name string; Init Expr }
+type DeclStmt struct { Name string; Init Expr; Typ BasicType }
 func (*DeclStmt) isStmt() {}
 
-type ArrayDeclStmt struct { Name string; Size int }
+type ArrayDeclStmt struct { Name string; Size int; Elem BasicType }
 func (*ArrayDeclStmt) isStmt() {}
 
 type AssignStmt struct { Name string; Value Expr }
@@ -93,6 +94,9 @@ func (*Ident) isExpr() {}
 type IntLit struct { Value int64 }
 func (*IntLit) isExpr() {}
 
+type StringLit struct { Value string }
+func (*StringLit) isExpr() {}
+
 type BinaryExpr struct { Op BinOp; Left, Right Expr }
 func (*BinaryExpr) isExpr() {}
 
@@ -137,5 +141,15 @@ func (*UnaryExpr) isExpr() {}
 type IndexExpr struct { Base Expr; Index Expr }
 func (*IndexExpr) isExpr() {}
 
-type GlobalDecl struct { Name string; Init *IntLit }
+type GlobalDecl struct { Name string; Init *IntLit; Typ BasicType }
 func (*GlobalDecl) isDecl() {}
+
+// GlobalArrayDecl represents a global array like: int g[N]; (zero-initialized)
+type GlobalArrayDecl struct { Name string; Size int; Elem BasicType }
+func (*GlobalArrayDecl) isDecl() {}
+
+type BasicType int
+const (
+    BTInt BasicType = iota
+    BTChar
+)

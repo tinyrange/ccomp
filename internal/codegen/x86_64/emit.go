@@ -14,11 +14,24 @@ func EmitModule(m *ir.Module) (string, error) {
     for _, f := range m.Funcs {
         if err := emitFunc(&b, f); err != nil { return "", err }
     }
+    if len(m.StrLits) > 0 {
+        b.WriteString(".section .rodata\n")
+        for _, s := range m.StrLits {
+            fmt.Fprintf(&b, "%s:\n", s.Name)
+            // emit NUL-terminated string
+            fmt.Fprintf(&b, "  .asciz %q\n", s.Data)
+        }
+    }
     if len(m.Globals) > 0 {
         b.WriteString(".data\n")
         for _, g := range m.Globals {
             fmt.Fprintf(&b, ".globl %s\n%s:\n", g.Name, g.Name)
-            fmt.Fprintf(&b, "  .quad %d\n", g.Init)
+            if g.Array {
+                // Reserve 8 bytes per element zero-initialized
+                fmt.Fprintf(&b, "  .zero %d\n", g.Length*8)
+            } else {
+                fmt.Fprintf(&b, "  .quad %d\n", g.Init)
+            }
         }
     }
     return b.String(), nil
@@ -231,6 +244,23 @@ func emitFunc(b *strings.Builder, f *ir.Function) error {
                     fmt.Fprintf(b, "  mov (%%rcx), %%rax\n")
                     fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", off)
                 }
+            case ir.OpLoad8:
+                ptr := ins.Val.Args[0]
+                if rr, ok := alloc.regOf[ptr]; ok {
+                    fmt.Fprintf(b, "  mov %s, %%rcx\n", rr)
+                } else if cst, isC := isConst(bb, ptr); isC {
+                    fmt.Fprintf(b, "  mov $%d, %%rcx\n", cst)
+                } else {
+                    off := slotOffset(ptr, frameSize)
+                    fmt.Fprintf(b, "  mov %d(%%rbp), %%rcx\n", off)
+                }
+                if r, ok := alloc.regOf[ins.Res]; ok {
+                    fmt.Fprintf(b, "  movzbq (%%rcx), %s\n", r)
+                } else {
+                    off := slotOffset(ins.Res, frameSize)
+                    b.WriteString("  movzbq (%rcx), %rax\n")
+                    fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", off)
+                }
             case ir.OpStore:
                 // Args: ptr, value
                 ptr := ins.Val.Args[0]
@@ -254,6 +284,26 @@ func emitFunc(b *strings.Builder, f *ir.Function) error {
                     fmt.Fprintf(b, "  mov %d(%%rbp), %%rax\n", off)
                 }
                 b.WriteString("  mov %rax, (%rcx)\n")
+            case ir.OpStore8:
+                ptr := ins.Val.Args[0]
+                val := ins.Val.Args[1]
+                if rr, ok := alloc.regOf[ptr]; ok {
+                    fmt.Fprintf(b, "  mov %s, %%rcx\n", rr)
+                } else if cst, isC := isConst(bb, ptr); isC {
+                    fmt.Fprintf(b, "  mov $%d, %%rcx\n", cst)
+                } else {
+                    off := slotOffset(ptr, frameSize)
+                    fmt.Fprintf(b, "  mov %d(%%rbp), %%rcx\n", off)
+                }
+                if cst, isC := isConst(bb, val); isC {
+                    fmt.Fprintf(b, "  mov $%d, %%rax\n", cst)
+                } else if vr, ok := alloc.regOf[val]; ok {
+                    fmt.Fprintf(b, "  mov %s, %%rax\n", vr)
+                } else {
+                    off := slotOffset(val, frameSize)
+                    fmt.Fprintf(b, "  mov %d(%%rbp), %%rax\n", off)
+                }
+                b.WriteString("  movb %al, (%rcx)\n")
             case ir.OpCall:
                 if len(ins.Val.Args) > len(argRegs) {
                     return fmt.Errorf("more than 6 integer args not supported")

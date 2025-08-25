@@ -10,9 +10,11 @@ const (
 	// Identifiers + literals
 	IDENT
 	INT
+	STRING
 
 	// Keywords
 	KW_INT
+	KW_CHAR
 	KW_RETURN
 	KW_IF
 	KW_ELSE

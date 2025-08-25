@@ -105,6 +105,35 @@ func (l *Lexer) Next() Token {
     case '~':
         tok.Type, tok.Lex = TILDE, string(ch); l.read()
     default:
+        if ch == '"' {
+            // string literal
+            startLine, startCol := l.line, l.col
+            l.read() // consume opening quote
+            var runes []rune
+            for l.ch != 0 && l.ch != '"' {
+                if l.ch == '\\' { // escape
+                    l.read()
+                    switch l.ch {
+                    case 'n': runes = append(runes, '\n')
+                    case 't': runes = append(runes, '\t')
+                    case 'r': runes = append(runes, '\r')
+                    case '\\': runes = append(runes, '\\')
+                    case '"': runes = append(runes, '"')
+                    case '0': runes = append(runes, '\x00')
+                    default:
+                        // unknown escape: include as-is
+                        if l.ch != 0 { runes = append(runes, l.ch) }
+                    }
+                    if l.ch != 0 { l.read(); continue }
+                    break
+                }
+                runes = append(runes, l.ch)
+                l.read()
+            }
+            // expect closing quote
+            if l.ch == '"' { l.read() }
+            return Token{Type: STRING, Lex: string(runes), Line: startLine, Col: startCol}
+        }
         if unicode.IsLetter(ch) || ch == '_' {
             startLine, startCol := l.line, l.col
             ident := []rune{ch}
@@ -117,6 +146,7 @@ func (l *Lexer) Next() Token {
             tok.Line, tok.Col = startLine, startCol
             switch lex {
             case "int": tok.Type = KW_INT
+            case "char": tok.Type = KW_CHAR
             case "return": tok.Type = KW_RETURN
             case "if": tok.Type = KW_IF
             case "else": tok.Type = KW_ELSE

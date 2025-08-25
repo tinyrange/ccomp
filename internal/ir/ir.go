@@ -3,12 +3,14 @@ package ir
 import (
     "fmt"
     "github.com/tinyrange/cc/internal/ast"
+    ty "github.com/tinyrange/cc/internal/types"
 )
 
 type Module struct {
     Name string
     Funcs []*Function
     Globals []Global
+    StrLits []StrLit
 }
 
 func NewModule(name string) *Module { return &Module{Name: name} }
@@ -16,6 +18,14 @@ func NewModule(name string) *Module { return &Module{Name: name} }
 type Global struct {
     Name string
     Init int64
+    Array bool
+    Length int // number of elements if Array; element size is 8 for now
+    ElemSize int
+}
+
+type StrLit struct {
+    Name string // label
+    Data string // bytes, zero-terminated when emitted
 }
 
 type Function struct {
@@ -66,6 +76,7 @@ const (
     OpRet
     OpStore
     OpLoad
+    OpLoad8
     OpParam
     OpAnd
     OpOr
@@ -81,6 +92,7 @@ const (
     OpAddr // address-of local SSA slot; Args[0]=value id whose slot address to take
     OpGlobalAddr // address of global; Sym=name
     OpSlotAddr // address of a frame slot for SSA id; no materialize
+    OpStore8
 )
 
 type Instr struct {
@@ -105,10 +117,15 @@ func (f *Function) addEdge(pred, succ *BasicBlock) {
 func BuildModule(file *ast.File, m *Module) error {
     // First collect globals
     for _, d := range file.Decls {
-        if gd, ok := d.(*ast.GlobalDecl); ok {
+        switch gd := d.(type) {
+        case *ast.GlobalDecl:
             init := int64(0)
             if gd.Init != nil { init = gd.Init.Value }
             m.Globals = append(m.Globals, Global{Name: gd.Name, Init: init})
+        case *ast.GlobalArrayDecl:
+            esz := 8
+            if gd.Elem == ast.BTChar { esz = 1 }
+            m.Globals = append(m.Globals, Global{Name: gd.Name, Array: true, Length: gd.Size, ElemSize: esz})
         }
     }
     // Then build functions
@@ -135,17 +152,26 @@ type buildCtx struct {
     breakTargets []*BasicBlock
     contTargets  []*BasicBlock
     m *Module
-    arrays map[string]struct{ base ValueID; size int }
+    arrays map[string]struct{ base ValueID; size int; elemSize int }
+    // minimal type info
+    varTypes map[string]ty.Type
+    // interned string literal labels
+    strLabels map[string]string
 }
 
 func (c *buildCtx) initParams() {
     c.curDef = map[*BasicBlock]map[string]ValueID{}
     c.pending = map[*BasicBlock]map[string]ValueID{}
-    c.arrays = map[string]struct{ base ValueID; size int }{}
+    c.arrays = map[string]struct{ base ValueID; size int; elemSize int }{}
+    c.varTypes = map[string]ty.Type{}
+    c.strLabels = map[string]string{}
     c.curDef[c.b] = map[string]ValueID{}
-    for _, name := range c.f.Params {
+    for _, p := range c.f.Params {
         id := c.newValue(OpParam, nil, 0)
-        c.writeVar(name, c.b, id)
+        c.writeVar(p, c.b, id)
+        // default int for now; parser now carries types but Function.Params is []string only.
+        // Keep int until function signature typing is added to IR.
+        c.varTypes[p] = ty.Int()
     }
 }
 
@@ -239,21 +265,25 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
     for _, s := range b.Stmts {
         switch s := s.(type) {
         case *ast.ReturnStmt:
-            v, err := c.buildExpr(s.Expr)
+            v, _, err := c.buildExprWithType(s.Expr)
             if err != nil { return err }
             c.add(OpRet, v)
         case *ast.DeclStmt:
             if s.Init != nil {
-                v, err := c.buildExpr(s.Init)
+                v, t, err := c.buildExprWithType(s.Init)
                 if err != nil { return err }
                 c.writeVar(s.Name, c.b, v)
+                c.varTypes[s.Name] = t
             } else {
                 c.writeVar(s.Name, c.b, c.iconst(0))
+                if s.Typ == ast.BTChar { c.varTypes[s.Name] = ty.ByteT() } else { c.varTypes[s.Name] = ty.Int() }
             }
         case *ast.AssignStmt:
-            v, err := c.buildExpr(s.Value)
+            v, t, err := c.buildExprWithType(s.Value)
             if err != nil { return err }
             c.writeVar(s.Name, c.b, v)
+            // update visible type
+            c.varTypes[s.Name] = t
         case *ast.ArrayDeclStmt:
             // Reserve contiguous stack slots by creating 'size' SSA values
             var base ValueID = -1
@@ -261,20 +291,53 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
                 id := c.iconst(0)
                 if i == 0 { base = id }
             }
-            c.arrays[s.Name] = struct{ base ValueID; size int }{base: base, size: s.Size}
+            esz := 8
+            if s.Elem == ast.BTChar { esz = 1 }
+            c.arrays[s.Name] = struct{ base ValueID; size int; elemSize int }{base: base, size: s.Size, elemSize: esz}
         case *ast.ArrayAssignStmt:
             // Compute address base + index*8 and store value
-            arr, ok := c.arrays[s.Name]
-            if !ok { return fmt.Errorf("unknown array %s", s.Name) }
-            basePtr := c.add(OpSlotAddr, arr.base)
-            idxVal, err := c.buildExpr(s.Index)
-            if err != nil { return err }
-            scale := c.iconst(8)
-            off := c.add(OpMul, idxVal, scale)
-            ptr := c.add(OpAdd, basePtr, off)
-            val, err := c.buildExpr(s.Value)
-            if err != nil { return err }
-            c.add(OpStore, ptr, val)
+            if arr, ok := c.arrays[s.Name]; ok {
+                basePtr := c.add(OpSlotAddr, arr.base)
+                idxVal, _, err := c.buildExprWithType(s.Index)
+                if err != nil { return err }
+                scale := c.iconst(int64(arr.elemSize))
+                off := c.add(OpMul, idxVal, scale)
+                ptr := c.add(OpAdd, basePtr, off)
+                val, _, err := c.buildExprWithType(s.Value)
+                if err != nil { return err }
+                if arr.elemSize == 1 { c.add(OpStore8, ptr, val) } else { c.add(OpStore, ptr, val) }
+                break
+            }
+            // global array
+            if c.m != nil {
+                for _, g := range c.m.Globals {
+                    if g.Name == s.Name && g.Array {
+                        base := c.newValue(OpGlobalAddr, nil, 0)
+                        c.b.Instrs[len(c.b.Instrs)-1].Val.Sym = g.Name
+                        idxVal, _, err := c.buildExprWithType(s.Index)
+                        if err != nil { return err }
+                        esz := 8
+                        if g.Array && g.Length >= 0 && g.Name == s.Name {
+                            // g is the target; ElemSize isn't stored yet; assume 8 for int for now
+                        }
+                        scale := c.iconst(int64(esz))
+                        off := c.add(OpMul, idxVal, scale)
+                        ptr := c.add(OpAdd, base, off)
+                        val, _, err := c.buildExprWithType(s.Value)
+                        if err != nil { return err }
+                        // we don't track elem size on Global yet; default 8
+                        c.add(OpStore, ptr, val)
+                        break
+                    }
+                }
+                // if not found, error
+                // Note: fallthrough if found; otherwise return error
+                found := false
+                for _, g := range c.m.Globals { if g.Name == s.Name && g.Array { found = true; break } }
+                if !found { return fmt.Errorf("unknown array %s", s.Name) }
+            } else {
+                return fmt.Errorf("unknown array %s", s.Name)
+            }
         case *ast.IfStmt:
             if err := c.buildIf(s); err != nil { return err }
         case *ast.WhileStmt:
@@ -298,7 +361,7 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
         case *ast.SwitchStmt:
             if err := c.buildSwitch(s); err != nil { return err }
         case *ast.ExprStmt:
-            if _, err := c.buildExpr(s.X); err != nil { return err }
+            if _, _, err := c.buildExprWithType(s.X); err != nil { return err }
         case *ast.BlockStmt:
             if err := c.buildBlock(s); err != nil { return err }
         default:
@@ -308,13 +371,30 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
     return nil
 }
 
+// buildExpr is a backward-compatible wrapper that discards type info.
 func (c *buildCtx) buildExpr(e ast.Expr) (ValueID, error) {
+    v, _, err := c.buildExprWithType(e)
+    return v, err
+}
+
+// buildExprWithType builds the expression and returns its SSA value and a minimal type.
+func (c *buildCtx) buildExprWithType(e ast.Expr) (ValueID, ty.Type, error) {
     switch e := e.(type) {
     case *ast.IntLit:
-        return c.iconst(e.Value), nil
+        return c.iconst(e.Value), ty.Int(), nil
+    case *ast.StringLit:
+        // materialize string literal in module rodata and return its address
+        lbl := c.internString(e.Value)
+        id := c.newValue(OpGlobalAddr, nil, 0)
+        c.b.Instrs[len(c.b.Instrs)-1].Val.Sym = lbl
+        // type: pointer to byte
+        return id, ty.PointerTo(ty.ByteT()), nil
     case *ast.Ident:
         if v, err := c.readVar(e.Name, c.b); err == nil {
-            return v, nil
+            // obtain variable type if known; default int
+            t := c.varTypes[e.Name]
+            if t.K == 0 && !t.IsPointer() { t = ty.Int() }
+            return v, t, nil
         }
         // fall back to global
         if c.m != nil {
@@ -322,103 +402,177 @@ func (c *buildCtx) buildExpr(e ast.Expr) (ValueID, error) {
                 if g.Name == e.Name {
                     addr := c.newValue(OpGlobalAddr, nil, 0)
                     c.b.Instrs[len(c.b.Instrs)-1].Val.Sym = g.Name
-                    return c.add(OpLoad, addr), nil
+                    return c.add(OpLoad, addr), ty.Int(), nil
                 }
             }
         }
-        return 0, fmt.Errorf("undefined variable %s", e.Name)
+        return 0, ty.Int(), fmt.Errorf("undefined variable %s", e.Name)
     case *ast.BinaryExpr:
-        l, err := c.buildExpr(e.Left)
-        if err != nil { return 0, err }
-        r, err := c.buildExpr(e.Right)
-        if err != nil { return 0, err }
+        l, lt, err := c.buildExprWithType(e.Left)
+        if err != nil { return 0, ty.Int(), err }
+        r, rt, err := c.buildExprWithType(e.Right)
+        if err != nil { return 0, ty.Int(), err }
         switch e.Op {
         case ast.OpAdd:
-            return c.add(OpAdd, l, r), nil
+            // pointer-aware addition: ptr +/- int => scale by elem size
+            if lt.IsPointer() && !rt.IsPointer() {
+                sz := lt.ElemSize()
+                if sz > 1 {
+                    s := c.iconst(int64(sz))
+                    r = c.add(OpMul, r, s)
+                }
+                return c.add(OpAdd, l, r), lt, nil
+            }
+            if rt.IsPointer() && !lt.IsPointer() {
+                sz := rt.ElemSize()
+                if sz > 1 {
+                    s := c.iconst(int64(sz))
+                    l = c.add(OpMul, l, s)
+                }
+                return c.add(OpAdd, l, r), rt, nil
+            }
+            return c.add(OpAdd, l, r), ty.Int(), nil
         case ast.OpSub:
-            return c.add(OpSub, l, r), nil
+            if lt.IsPointer() && !rt.IsPointer() {
+                sz := lt.ElemSize()
+                if sz > 1 {
+                    s := c.iconst(int64(sz))
+                    r = c.add(OpMul, r, s)
+                }
+                return c.add(OpSub, l, r), lt, nil
+            }
+            // ptr - ptr -> bytes difference (not scaled), keep int for now
+            return c.add(OpSub, l, r), ty.Int(), nil
         case ast.OpMul:
-            return c.add(OpMul, l, r), nil
+            return c.add(OpMul, l, r), ty.Int(), nil
         case ast.OpDiv:
-            return c.add(OpDiv, l, r), nil
+            return c.add(OpDiv, l, r), ty.Int(), nil
         case ast.OpEq:
-            return c.add(OpEq, l, r), nil
+            return c.add(OpEq, l, r), ty.Int(), nil
         case ast.OpNe:
-            return c.add(OpNe, l, r), nil
+            return c.add(OpNe, l, r), ty.Int(), nil
         case ast.OpLt:
-            return c.add(OpLt, l, r), nil
+            return c.add(OpLt, l, r), ty.Int(), nil
         case ast.OpLe:
-            return c.add(OpLe, l, r), nil
+            return c.add(OpLe, l, r), ty.Int(), nil
         case ast.OpGt:
-            return c.add(OpGt, l, r), nil
+            return c.add(OpGt, l, r), ty.Int(), nil
         case ast.OpGe:
-            return c.add(OpGe, l, r), nil
+            return c.add(OpGe, l, r), ty.Int(), nil
         case ast.OpAnd:
-            return c.add(OpAnd, l, r), nil
+            return c.add(OpAnd, l, r), ty.Int(), nil
         case ast.OpOr:
-            return c.add(OpOr, l, r), nil
+            return c.add(OpOr, l, r), ty.Int(), nil
         case ast.OpXor:
-            return c.add(OpXor, l, r), nil
+            return c.add(OpXor, l, r), ty.Int(), nil
         case ast.OpShl:
-            return c.add(OpShl, l, r), nil
+            return c.add(OpShl, l, r), ty.Int(), nil
         case ast.OpShr:
-            return c.add(OpShr, l, r), nil
+            return c.add(OpShr, l, r), ty.Int(), nil
         case ast.OpLAnd:
-            return c.buildLogical(true, e.Left, e.Right)
+            v, err := c.buildLogical(true, e.Left, e.Right)
+            return v, ty.Int(), err
         case ast.OpLOr:
-            return c.buildLogical(false, e.Left, e.Right)
+            v, err := c.buildLogical(false, e.Left, e.Right)
+            return v, ty.Int(), err
         }
     case *ast.CallExpr:
         // Evaluate args
         var argv []ValueID
         for _, a := range e.Args {
-            v, err := c.buildExpr(a)
-            if err != nil { return 0, err }
+            v, _, err := c.buildExprWithType(a)
+            if err != nil { return 0, ty.Int(), err }
             argv = append(argv, v)
         }
         id := c.newValue(OpCall, argv, 0)
         // attach callee symbol
         // patch the last inserted instruction's Sym
         c.b.Instrs[len(c.b.Instrs)-1].Val.Sym = e.Name
-        return id, nil
+        return id, ty.Int(), nil
     case *ast.IndexExpr:
+        // Local named array
         if b, ok := e.Base.(*ast.Ident); ok {
-            // arr read via load
-            arr, ok := c.arrays[b.Name]
-            if !ok { return 0, fmt.Errorf("unknown array %s", b.Name) }
-            basePtr := c.add(OpSlotAddr, arr.base)
-            idxVal, err := c.buildExpr(e.Index)
-            if err != nil { return 0, err }
-            scale := c.iconst(8)
-            off := c.add(OpMul, idxVal, scale)
-            ptr := c.add(OpAdd, basePtr, off)
-            return c.add(OpLoad, ptr), nil
+            if arr, ok := c.arrays[b.Name]; ok {
+                basePtr := c.add(OpSlotAddr, arr.base)
+                idxVal, _, err := c.buildExprWithType(e.Index)
+                if err != nil { return 0, ty.Int(), err }
+                scale := c.iconst(int64(arr.elemSize))
+                off := c.add(OpMul, idxVal, scale)
+                ptr := c.add(OpAdd, basePtr, off)
+                if arr.elemSize == 1 { return c.add(OpLoad8, ptr), ty.Int(), nil }
+                return c.add(OpLoad, ptr), ty.Int(), nil
+            }
+            // try global array
+            if c.m != nil {
+                for _, g := range c.m.Globals {
+                    if g.Name == b.Name && g.Array {
+                        addr := c.newValue(OpGlobalAddr, nil, 0)
+                        c.b.Instrs[len(c.b.Instrs)-1].Val.Sym = g.Name
+                        idxVal, _, err := c.buildExprWithType(e.Index)
+                        if err != nil { return 0, ty.Int(), err }
+                        scale := c.iconst(int64(g.ElemSize))
+                        off := c.add(OpMul, idxVal, scale)
+                        ptr := c.add(OpAdd, addr, off)
+                        if g.ElemSize == 1 { return c.add(OpLoad8, ptr), ty.Int(), nil }
+                        return c.add(OpLoad, ptr), ty.Int(), nil
+                    }
+                }
+            }
+            // fallthrough to generic pointer indexing on unknown ident
         }
-        return 0, fmt.Errorf("unsupported index expression")
+        // Generic pointer indexing: base must be pointer
+        base, bt, err := c.buildExprWithType(e.Base)
+        if err != nil { return 0, ty.Int(), err }
+        idxVal, _, err := c.buildExprWithType(e.Index)
+        if err != nil { return 0, ty.Int(), err }
+        sz := 1
+        if bt.IsPointer() { sz = bt.ElemSize() }
+        scale := c.iconst(int64(sz))
+        off := c.add(OpMul, idxVal, scale)
+        ptr := c.add(OpAdd, base, off)
+        if sz == 1 { return c.add(OpLoad8, ptr), ty.ByteT(), nil }
+        return c.add(OpLoad, ptr), ty.Int(), nil
     case *ast.UnaryExpr:
         switch e.Op {
         case ast.OpAddr:
             if idn, ok := e.X.(*ast.Ident); ok {
                 v, err := c.readVar(idn.Name, c.b)
-                if err != nil { return 0, err }
-                return c.add(OpAddr, v), nil
+                if err != nil { return 0, ty.Int(), err }
+                // pointer to whatever the variable is (default int)
+                bt := c.varTypes[idn.Name]
+                if bt.K == 0 && !bt.IsPointer() { bt = ty.Int() }
+                return c.add(OpAddr, v), ty.PointerTo(bt), nil
             }
-            return 0, fmt.Errorf("address-of unsupported operand")
+            return 0, ty.Int(), fmt.Errorf("address-of unsupported operand")
         case ast.OpDeref:
-            ptr, err := c.buildExpr(e.X)
-            if err != nil { return 0, err }
-            return c.add(OpLoad, ptr), nil
+            ptr, pt, err := c.buildExprWithType(e.X)
+            if err != nil { return 0, ty.Int(), err }
+            // result type is pointee if known
+            rt := ty.Int()
+            if pt.IsPointer() && pt.Elem != nil { rt = *pt.Elem }
+            if rt.Size() == 1 {
+                return c.add(OpLoad8, ptr), rt, nil
+            }
+            return c.add(OpLoad, ptr), rt, nil
         case ast.OpNeg:
-            x, err := c.buildExpr(e.X)
-            if err != nil { return 0, err }
-            return c.add(OpSub, c.iconst(0), x), nil
+            x, _, err := c.buildExprWithType(e.X)
+            if err != nil { return 0, ty.Int(), err }
+            return c.add(OpSub, c.iconst(0), x), ty.Int(), nil
         case ast.OpBitNot:
-            x, err := c.buildExpr(e.X)
-            if err != nil { return 0, err }
-            return c.add(OpNot, x), nil
+            x, _, err := c.buildExprWithType(e.X)
+            if err != nil { return 0, ty.Int(), err }
+            return c.add(OpNot, x), ty.Int(), nil
         }
     }
-    return 0, fmt.Errorf("unsupported expr")
+    return 0, ty.Int(), fmt.Errorf("unsupported expr")
+}
+
+func (c *buildCtx) internString(s string) string {
+    if lbl, ok := c.strLabels[s]; ok { return lbl }
+    lbl := fmt.Sprintf(".Lstr%d", len(c.m.StrLits))
+    c.strLabels[s] = lbl
+    c.m.StrLits = append(c.m.StrLits, StrLit{Name: lbl, Data: s})
+    return lbl
 }
 
 func (c *buildCtx) buildLogical(isAnd bool, left, right ast.Expr) (ValueID, error) {

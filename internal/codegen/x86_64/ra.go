@@ -5,7 +5,8 @@ import "github.com/tinyrange/cc/internal/ir"
 // Very simple linear-scan register allocation for single-block functions.
 // Avoids using %rax so division and return can use it freely.
 
-var allocableRegs = []string{"%rcx", "%rdx", "%r8", "%r9", "%r10", "%r11", "%rsi", "%rdi"}
+// Reserve %rcx for emitter scratch (loads/stores, shifts), so exclude it here.
+var allocableRegs = []string{"%rdx", "%r8", "%r9", "%r10", "%r11", "%rsi", "%rdi"}
 
 type allocation struct {
     regOf map[ir.ValueID]string
