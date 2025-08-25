@@ -17,6 +17,7 @@ func (*FuncDecl) isDecl() {}
 type Param struct {
     Name string
     Typ  BasicType
+    Ptr  bool
 }
 
 type Stmt interface{ isStmt() }
@@ -24,19 +25,19 @@ type Stmt interface{ isStmt() }
 type BlockStmt struct { Stmts []Stmt }
 func (*BlockStmt) isStmt() {}
 
-type ReturnStmt struct { Expr Expr }
+type ReturnStmt struct { Expr Expr; Pos Pos }
 func (*ReturnStmt) isStmt() {}
 
 type ExprStmt struct { X Expr }
 func (*ExprStmt) isStmt() {}
 
-type DeclStmt struct { Name string; Init Expr; Typ BasicType }
+type DeclStmt struct { Name string; Init Expr; Typ BasicType; Ptr bool; Pos Pos }
 func (*DeclStmt) isStmt() {}
 
 type ArrayDeclStmt struct { Name string; Size int; Elem BasicType }
 func (*ArrayDeclStmt) isStmt() {}
 
-type AssignStmt struct { Name string; Value Expr }
+type AssignStmt struct { Name string; Value Expr; Pos Pos }
 func (*AssignStmt) isStmt() {}
 
 type ArrayAssignStmt struct { Name string; Index Expr; Value Expr }
@@ -142,7 +143,10 @@ func (*UnaryExpr) isExpr() {}
 type IndexExpr struct { Base Expr; Index Expr }
 func (*IndexExpr) isExpr() {}
 
-type GlobalDecl struct { Name string; Init *IntLit; Typ BasicType }
+type CastExpr struct { To BasicType; Ptr bool; X Expr }
+func (*CastExpr) isExpr() {}
+
+type GlobalDecl struct { Name string; Init *IntLit; Typ BasicType; Ptr bool }
 func (*GlobalDecl) isDecl() {}
 
 // GlobalArrayDecl represents a global array like: int g[N]; (zero-initialized)
@@ -154,3 +158,5 @@ const (
     BTInt BasicType = iota
     BTChar
 )
+
+type Pos struct { Line int; Col int }

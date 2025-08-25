@@ -46,8 +46,9 @@ func (p *Parser) parseDecl() (ast.Decl, error) {
         return nil, fmt.Errorf("only 'int'/'char' globals/functions supported at %d:%d", p.tok.Line, p.tok.Col)
     }
     p.next()
-    // optional pointer stars for global decls (ignored for now)
-    for p.tok.Type == lexer.STAR { p.next() }
+    // optional pointer stars
+    ptr := false
+    for p.tok.Type == lexer.STAR { p.next(); ptr = true }
     nameTok, err := p.expect(lexer.IDENT)
     if err != nil { return nil, err }
     if p.tok.Type == lexer.LPAREN {
@@ -80,7 +81,7 @@ func (p *Parser) parseDecl() (ast.Decl, error) {
         p.next()
     }
     if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
-    return &ast.GlobalDecl{Name: nameTok.Lex, Init: init, Typ: basict}, nil
+    return &ast.GlobalDecl{Name: nameTok.Lex, Init: init, Typ: basict, Ptr: ptr}, nil
 }
 
 func (p *Parser) parseParams() ([]ast.Param, error) {
@@ -92,9 +93,11 @@ func (p *Parser) parseParams() ([]ast.Param, error) {
         bt := ast.BTInt
         if p.tok.Type == lexer.KW_CHAR { bt = ast.BTChar } else if p.tok.Type != lexer.KW_INT { return nil, fmt.Errorf("only int/char params supported at %d:%d", p.tok.Line, p.tok.Col) }
         p.next()
+        ptr := false
+        for p.tok.Type == lexer.STAR { p.next(); ptr = true }
         nameTok, err := p.expect(lexer.IDENT)
         if err != nil { return nil, err }
-        params = append(params, ast.Param{Name: nameTok.Lex, Typ: bt})
+        params = append(params, ast.Param{Name: nameTok.Lex, Typ: bt, Ptr: ptr})
         if p.tok.Type == lexer.COMMA { p.next(); continue }
         break
     }
@@ -116,17 +119,21 @@ func (p *Parser) parseBlock() (*ast.BlockStmt, error) {
 func (p *Parser) parseStmt() (ast.Stmt, error) {
     switch p.tok.Type {
     case lexer.KW_RETURN:
+        // capture pos at 'return'
+        posTok := p.tok
         p.next()
         e, err := p.parseExpr()
         if err != nil { return nil, err }
         if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
-        return &ast.ReturnStmt{Expr: e}, nil
+        return &ast.ReturnStmt{Expr: e, Pos: ast.Pos{Line: posTok.Line, Col: posTok.Col}}, nil
     case lexer.KW_INT, lexer.KW_CHAR:
         // declaration: T x; | T x = expr; | T a[N];
         bt := ast.BTInt
         if p.tok.Type == lexer.KW_CHAR { bt = ast.BTChar }
+        posTok := p.tok
         p.next()
-        for p.tok.Type == lexer.STAR { p.next() }
+        ptr := false
+        for p.tok.Type == lexer.STAR { p.next(); ptr = true }
         nameTok, err := p.expect(lexer.IDENT)
         if err != nil { return nil, err }
         // array declarator
@@ -146,7 +153,7 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
             if err != nil { return nil, err }
         }
         if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
-        return &ast.DeclStmt{Name: nameTok.Lex, Init: init, Typ: bt}, nil
+        return &ast.DeclStmt{Name: nameTok.Lex, Init: init, Typ: bt, Ptr: ptr, Pos: ast.Pos{Line: posTok.Line, Col: posTok.Col}}, nil
     case lexer.LBRACE:
         return p.parseBlock()
     case lexer.KW_IF:
@@ -302,7 +309,7 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
             v, err := p.parseExpr()
             if err != nil { return nil, err }
             if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
-            return &ast.AssignStmt{Name: id.Lex, Value: v}, nil
+            return &ast.AssignStmt{Name: id.Lex, Value: v, Pos: ast.Pos{Line: id.Line, Col: id.Col}}, nil
         }
         // rollback: treat IDENT as start of primary in expr
         // Continue parsing the rest of the expression after this primary
@@ -433,6 +440,19 @@ func (p *Parser) parseFactor() (ast.Expr, error) {
         return expr, nil
     case lexer.LPAREN:
         p.next()
+        // check for cast: ( type [*] ) unary
+        if p.tok.Type == lexer.KW_INT || p.tok.Type == lexer.KW_CHAR {
+            bt := ast.BTInt
+            if p.tok.Type == lexer.KW_CHAR { bt = ast.BTChar }
+            p.next()
+            cptr := false
+            for p.tok.Type == lexer.STAR { p.next(); cptr = true }
+            if _, err := p.expect(lexer.RPAREN); err != nil { return nil, err }
+            x, err := p.parseUnary()
+            if err != nil { return nil, err }
+            return &ast.CastExpr{To: bt, Ptr: cptr, X: x}, nil
+        }
+        // otherwise parenthesized expression
         e, err := p.parseExpr()
         if err != nil { return nil, err }
         if _, err := p.expect(lexer.RPAREN); err != nil { return nil, err }

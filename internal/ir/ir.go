@@ -141,7 +141,11 @@ func BuildModule(file *ast.File, m *Module) error {
         ctx.initParams()
         // Set param types from AST
         for _, p := range fd.Params {
-            if p.Typ == ast.BTChar { ctx.varTypes[p.Name] = ty.ByteT() } else { ctx.varTypes[p.Name] = ty.Int() }
+            if p.Ptr {
+                if p.Typ == ast.BTChar { ctx.varTypes[p.Name] = ty.PointerTo(ty.ByteT()) } else { ctx.varTypes[p.Name] = ty.PointerTo(ty.Int()) }
+            } else {
+                if p.Typ == ast.BTChar { ctx.varTypes[p.Name] = ty.ByteT() } else { ctx.varTypes[p.Name] = ty.Int() }
+            }
         }
         // Set function return type
         if fd.Ret == ast.BTChar { ctx.retType = ty.ByteT() } else { ctx.retType = ty.Int() }
@@ -278,7 +282,7 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
             if err != nil { return err }
             // simple type check: disallow pointer returns for now
             if t.IsPointer() {
-                return fmt.Errorf("type error: returning pointer not supported")
+                return fmt.Errorf("%s:%d:%d: type error: returning pointer not supported", c.f.Name, s.Pos.Line, s.Pos.Col)
             }
             c.add(OpRet, v)
         case *ast.DeclStmt:
@@ -289,7 +293,11 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
                 c.varTypes[s.Name] = t
             } else {
                 c.writeVar(s.Name, c.b, c.iconst(0))
-                if s.Typ == ast.BTChar { c.varTypes[s.Name] = ty.ByteT() } else { c.varTypes[s.Name] = ty.Int() }
+                if s.Ptr {
+                    if s.Typ == ast.BTChar { c.varTypes[s.Name] = ty.PointerTo(ty.ByteT()) } else { c.varTypes[s.Name] = ty.PointerTo(ty.Int()) }
+                } else {
+                    if s.Typ == ast.BTChar { c.varTypes[s.Name] = ty.ByteT() } else { c.varTypes[s.Name] = ty.Int() }
+                }
             }
         case *ast.AssignStmt:
             // If assigning to a global (and no local of same name), emit store to global
@@ -308,7 +316,7 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
             // simple type checks for locals: pointer vs non-pointer, char vs pointer
             if vt, ok := c.varTypes[s.Name]; ok {
                 if vt.IsPointer() != t.IsPointer() {
-                    return fmt.Errorf("type error: cannot assign %s to %s", typeStr(t), typeStr(vt))
+                    return fmt.Errorf("%s:%d:%d: type error: cannot assign %s to %s", c.f.Name, s.Pos.Line, s.Pos.Col, typeStr(t), typeStr(vt))
                 }
             }
             c.writeVar(s.Name, c.b, v)
@@ -594,6 +602,35 @@ func (c *buildCtx) buildExprWithType(e ast.Expr) (ValueID, ty.Type, error) {
             if err != nil { return 0, ty.Int(), err }
             return c.add(OpNot, x), ty.Int(), nil
         }
+    case *ast.CastExpr:
+        v, st, err := c.buildExprWithType(e.X)
+        if err != nil { return 0, ty.Int(), err }
+        // Build target type
+        var tt ty.Type
+        if e.Ptr {
+            if e.To == ast.BTChar { tt = ty.PointerTo(ty.ByteT()) } else { tt = ty.PointerTo(ty.Int()) }
+        } else {
+            if e.To == ast.BTChar { tt = ty.ByteT() } else { tt = ty.Int() }
+        }
+        // For now, casts are mostly no-ops; if narrowing to char, mask to 0xFF
+        if !tt.IsPointer() && st.IsPointer() {
+            // pointer to int: no-op
+            return v, tt, nil
+        }
+        if tt.IsPointer() && !st.IsPointer() {
+            // int to pointer: no-op
+            return v, tt, nil
+        }
+        if !tt.IsPointer() && !st.IsPointer() {
+            if tt.Size() == 1 {
+                // mask low byte
+                m := c.iconst(0xFF)
+                return c.add(OpAnd, v, m), tt, nil
+            }
+            return v, tt, nil
+        }
+        // pointer to pointer
+        return v, tt, nil
     }
     return 0, ty.Int(), fmt.Errorf("unsupported expr")
 }
