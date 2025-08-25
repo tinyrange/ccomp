@@ -67,6 +67,18 @@ func (*BreakStmt) isStmt() {}
 type ContinueStmt struct{}
 func (*ContinueStmt) isStmt() {}
 
+type SwitchStmt struct {
+    Tag Expr
+    Cases []CaseClause
+    Default *BlockStmt // may be nil
+}
+func (*SwitchStmt) isStmt() {}
+
+type CaseClause struct {
+    Values []int64 // case constants
+    Body *BlockStmt
+}
+
 type Expr interface{ isExpr() }
 
 type Ident struct { Name string }
@@ -91,3 +103,21 @@ const (
     OpGt
     OpGe
 )
+
+type CallExpr struct {
+    Name string
+    Args []Expr
+}
+func (*CallExpr) isExpr() {}
+
+type UnOp int
+const (
+    OpAddr UnOp = iota
+    OpDeref
+)
+
+type UnaryExpr struct { Op UnOp; X Expr }
+func (*UnaryExpr) isExpr() {}
+
+type GlobalDecl struct { Name string; Init *IntLit }
+func (*GlobalDecl) isDecl() {}

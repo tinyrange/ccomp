@@ -74,6 +74,10 @@ func (l *Lexer) Next() Token {
         tok.Type, tok.Lex = SEMI, string(ch); l.read()
     case ',':
         tok.Type, tok.Lex = COMMA, string(ch); l.read()
+    case ':':
+        tok.Type, tok.Lex = COLON, string(ch); l.read()
+    case '&':
+        tok.Type, tok.Lex = AMP, string(ch); l.read()
     case '=':
         if l.peek() == '=' { l.read(); tok.Type, tok.Lex = EQEQ, "=="; l.read() } else { tok.Type, tok.Lex = ASSIGN, string(ch); l.read() }
     case '+':
@@ -111,6 +115,9 @@ func (l *Lexer) Next() Token {
             case "do": tok.Type = KW_DO
             case "break": tok.Type = KW_BREAK
             case "continue": tok.Type = KW_CONTINUE
+            case "switch": tok.Type = KW_SWITCH
+            case "case": tok.Type = KW_CASE
+            case "default": tok.Type = KW_DEFAULT
             default:
                 tok.Type = IDENT
             }

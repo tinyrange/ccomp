@@ -37,20 +37,36 @@ func (p *Parser) expect(tt lexer.TokenType) (lexer.Token, error) {
 }
 
 func (p *Parser) parseDecl() (ast.Decl, error) {
-    // Only: int IDENT(params) { ... }
+    // Either: int IDENT(params) { ... }  OR  int [*]* IDENT [= INT] ;  (global)
     if p.tok.Type != lexer.KW_INT {
         return nil, fmt.Errorf("only 'int' functions supported at %d:%d", p.tok.Line, p.tok.Col)
     }
     p.next()
+    // optional pointer stars for global decls (ignored for now)
+    for p.tok.Type == lexer.STAR { p.next() }
     nameTok, err := p.expect(lexer.IDENT)
     if err != nil { return nil, err }
-    if _, err = p.expect(lexer.LPAREN); err != nil { return nil, err }
-    params, err := p.parseParams()
-    if err != nil { return nil, err }
-    if _, err = p.expect(lexer.RPAREN); err != nil { return nil, err }
-    body, err := p.parseBlock()
-    if err != nil { return nil, err }
-    return &ast.FuncDecl{Name: nameTok.Lex, Params: params, Body: body}, nil
+    if p.tok.Type == lexer.LPAREN {
+        // function
+        p.next()
+        params, err := p.parseParams()
+        if err != nil { return nil, err }
+        if _, err = p.expect(lexer.RPAREN); err != nil { return nil, err }
+        body, err := p.parseBlock()
+        if err != nil { return nil, err }
+        return &ast.FuncDecl{Name: nameTok.Lex, Params: params, Body: body}, nil
+    }
+    // global variable
+    var init *ast.IntLit
+    if p.tok.Type == lexer.ASSIGN {
+        p.next()
+        if p.tok.Type != lexer.INT { return nil, fmt.Errorf("only int initializers for globals at %d:%d", p.tok.Line, p.tok.Col) }
+        v, _ := strconv.ParseInt(p.tok.Lex, 10, 64)
+        init = &ast.IntLit{Value: v}
+        p.next()
+    }
+    if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
+    return &ast.GlobalDecl{Name: nameTok.Lex, Init: init}, nil
 }
 
 func (p *Parser) parseParams() ([]ast.Param, error) {
@@ -95,6 +111,7 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
     case lexer.KW_INT:
         // declaration: int x; | int x = expr;
         p.next()
+        for p.tok.Type == lexer.STAR { p.next() }
         nameTok, err := p.expect(lexer.IDENT)
         if err != nil { return nil, err }
         var init ast.Expr
@@ -136,6 +153,55 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
         var b *ast.BlockStmt
         if bb, ok := body.(*ast.BlockStmt); ok { b = bb } else { b = &ast.BlockStmt{Stmts: []ast.Stmt{body}} }
         return &ast.WhileStmt{Cond: cond, Body: b}, nil
+    case lexer.KW_SWITCH:
+        p.next()
+        if _, err := p.expect(lexer.LPAREN); err != nil { return nil, err }
+        tag, err := p.parseExpr()
+        if err != nil { return nil, err }
+        if _, err := p.expect(lexer.RPAREN); err != nil { return nil, err }
+        if _, err := p.expect(lexer.LBRACE); err != nil { return nil, err }
+        var cases []ast.CaseClause
+        var defBody *ast.BlockStmt
+        for p.tok.Type != lexer.RBRACE && p.tok.Type != lexer.EOF {
+            if p.tok.Type == lexer.KW_CASE {
+                // parse one or more case labels possibly sharing a body
+                var values []int64
+                for {
+                    p.next()
+                    // only integer literals for now
+                    t, err := p.expect(lexer.INT)
+                    if err != nil { return nil, err }
+                    v, _ := strconv.ParseInt(t.Lex, 10, 64)
+                    values = append(values, v)
+                    if _, err := p.expect(lexer.COLON); err != nil { return nil, err }
+                    if p.tok.Type != lexer.KW_CASE { break }
+                }
+                // gather statements until next case/default or '}'
+                var bodyStmts []ast.Stmt
+                for p.tok.Type != lexer.KW_CASE && p.tok.Type != lexer.KW_DEFAULT && p.tok.Type != lexer.RBRACE {
+                    s, err := p.parseStmt()
+                    if err != nil { return nil, err }
+                    bodyStmts = append(bodyStmts, s)
+                }
+                cases = append(cases, ast.CaseClause{Values: values, Body: &ast.BlockStmt{Stmts: bodyStmts}})
+                continue
+            }
+            if p.tok.Type == lexer.KW_DEFAULT {
+                p.next()
+                if _, err := p.expect(lexer.COLON); err != nil { return nil, err }
+                var bodyStmts []ast.Stmt
+                for p.tok.Type != lexer.KW_CASE && p.tok.Type != lexer.RBRACE {
+                    s, err := p.parseStmt()
+                    if err != nil { return nil, err }
+                    bodyStmts = append(bodyStmts, s)
+                }
+                defBody = &ast.BlockStmt{Stmts: bodyStmts}
+                continue
+            }
+            return nil, fmt.Errorf("unexpected token in switch at %d:%d", p.tok.Line, p.tok.Col)
+        }
+        if _, err := p.expect(lexer.RBRACE); err != nil { return nil, err }
+        return &ast.SwitchStmt{Tag: tag, Cases: cases, Default: defBody}, nil
     case lexer.KW_FOR:
         p.next()
         if _, err := p.expect(lexer.LPAREN); err != nil { return nil, err }
@@ -238,11 +304,11 @@ func (p *Parser) parseAdd(left ast.Expr) (ast.Expr, error) {
 }
 
 func (p *Parser) parseTerm() (ast.Expr, error) {
-    left, err := p.parseFactor()
+    left, err := p.parseUnary()
     if err != nil { return nil, err }
     for p.tok.Type == lexer.STAR || p.tok.Type == lexer.SLASH {
         op := p.tok.Type; p.next()
-        right, err := p.parseFactor()
+        right, err := p.parseUnary()
         if err != nil { return nil, err }
         left = &ast.BinaryExpr{Op: binOpFromToken(op), Left: left, Right: right}
     }
@@ -252,9 +318,25 @@ func (p *Parser) parseTerm() (ast.Expr, error) {
 func (p *Parser) parseFactor() (ast.Expr, error) {
     switch p.tok.Type {
     case lexer.IDENT:
-        id := &ast.Ident{Name: p.tok.Lex}
+        name := p.tok.Lex
         p.next()
-        return id, nil
+        if p.tok.Type == lexer.LPAREN {
+            // call
+            p.next()
+            var args []ast.Expr
+            if p.tok.Type != lexer.RPAREN {
+                for {
+                    e, err := p.parseExpr()
+                    if err != nil { return nil, err }
+                    args = append(args, e)
+                    if p.tok.Type == lexer.COMMA { p.next(); continue }
+                    break
+                }
+            }
+            if _, err := p.expect(lexer.RPAREN); err != nil { return nil, err }
+            return &ast.CallExpr{Name: name, Args: args}, nil
+        }
+        return &ast.Ident{Name: name}, nil
     case lexer.INT:
         v, _ := strconv.ParseInt(p.tok.Lex, 10, 64)
         lit := &ast.IntLit{Value: v}
@@ -269,6 +351,22 @@ func (p *Parser) parseFactor() (ast.Expr, error) {
     default:
         return nil, fmt.Errorf("unexpected token %v at %d:%d", p.tok.Type, p.tok.Line, p.tok.Col)
     }
+}
+
+func (p *Parser) parseUnary() (ast.Expr, error) {
+    if p.tok.Type == lexer.AMP {
+        p.next()
+        x, err := p.parseUnary()
+        if err != nil { return nil, err }
+        return &ast.UnaryExpr{Op: ast.OpAddr, X: x}, nil
+    }
+    if p.tok.Type == lexer.STAR {
+        p.next()
+        x, err := p.parseUnary()
+        if err != nil { return nil, err }
+        return &ast.UnaryExpr{Op: ast.OpDeref, X: x}, nil
+    }
+    return p.parseFactor()
 }
 
 func (p *Parser) parseRelational() (ast.Expr, error) {

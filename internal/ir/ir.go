@@ -8,9 +8,15 @@ import (
 type Module struct {
     Name string
     Funcs []*Function
+    Globals []Global
 }
 
 func NewModule(name string) *Module { return &Module{Name: name} }
+
+type Global struct {
+    Name string
+    Init int64
+}
 
 type Function struct {
     Name string
@@ -40,6 +46,7 @@ type Value struct {
     Op   Op
     Args []ValueID
     Const int64
+    Sym string
 }
 
 type Op int
@@ -64,6 +71,9 @@ const (
     OpPhi  // phi nodes at start of a block; args aligned with Preds
     OpJmp  // unconditional jump; Args[0] holds target block index
     OpJnz  // conditional jump; Args[0]=cond, Args[1]=true blk idx, Args[2]=false blk idx
+    OpCall // function call; Sym=callee, Args[] = arg value ids
+    OpAddr // address-of local SSA slot; Args[0]=value id whose slot address to take
+    OpGlobalAddr // address of global; Sym=name
 )
 
 type Instr struct {
@@ -85,13 +95,22 @@ func (f *Function) addEdge(pred, succ *BasicBlock) {
 
 // BuildModule creates basic SSA IR for Phase 1 (expressions, variables, return)
 func BuildModule(file *ast.File, m *Module) error {
+    // First collect globals
+    for _, d := range file.Decls {
+        if gd, ok := d.(*ast.GlobalDecl); ok {
+            init := int64(0)
+            if gd.Init != nil { init = gd.Init.Value }
+            m.Globals = append(m.Globals, Global{Name: gd.Name, Init: init})
+        }
+    }
+    // Then build functions
     for _, d := range file.Decls {
         fd, ok := d.(*ast.FuncDecl)
-        if !ok { return fmt.Errorf("only functions supported in this phase") }
+        if !ok { continue }
         f := &Function{Name: fd.Name}
         for _, p := range fd.Params { f.Params = append(f.Params, p.Name) }
         b := f.newBlock("entry")
-        ctx := &buildCtx{f: f, b: b}
+        ctx := &buildCtx{f: f, b: b, m: m}
         ctx.initParams()
         if err := ctx.buildBlock(fd.Body); err != nil { return err }
         m.Funcs = append(m.Funcs, f)
@@ -107,6 +126,7 @@ type buildCtx struct {
     pending map[*BasicBlock]map[string]ValueID // name -> phi id to fill on seal
     breakTargets []*BasicBlock
     contTargets  []*BasicBlock
+    m *Module
 }
 
 func (c *buildCtx) initParams() {
@@ -244,6 +264,8 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
             ti := blockIndexOf(c.f, t)
             c.b.Instrs = append(c.b.Instrs, Instr{Res: -1, Val: Value{Op: OpJmp, Args: []ValueID{ValueID(ti)}}})
             c.f.addEdge(c.b, t)
+        case *ast.SwitchStmt:
+            if err := c.buildSwitch(s); err != nil { return err }
         case *ast.ExprStmt:
             if _, err := c.buildExpr(s.X); err != nil { return err }
         case *ast.BlockStmt:
@@ -260,7 +282,20 @@ func (c *buildCtx) buildExpr(e ast.Expr) (ValueID, error) {
     case *ast.IntLit:
         return c.iconst(e.Value), nil
     case *ast.Ident:
-        return c.readVar(e.Name, c.b)
+        if v, err := c.readVar(e.Name, c.b); err == nil {
+            return v, nil
+        }
+        // fall back to global
+        if c.m != nil {
+            for _, g := range c.m.Globals {
+                if g.Name == e.Name {
+                    addr := c.newValue(OpGlobalAddr, nil, 0)
+                    c.b.Instrs[len(c.b.Instrs)-1].Val.Sym = g.Name
+                    return c.add(OpLoad, addr), nil
+                }
+            }
+        }
+        return 0, fmt.Errorf("undefined variable %s", e.Name)
     case *ast.BinaryExpr:
         l, err := c.buildExpr(e.Left)
         if err != nil { return 0, err }
@@ -287,6 +322,33 @@ func (c *buildCtx) buildExpr(e ast.Expr) (ValueID, error) {
             return c.add(OpGt, l, r), nil
         case ast.OpGe:
             return c.add(OpGe, l, r), nil
+        }
+    case *ast.CallExpr:
+        // Evaluate args
+        var argv []ValueID
+        for _, a := range e.Args {
+            v, err := c.buildExpr(a)
+            if err != nil { return 0, err }
+            argv = append(argv, v)
+        }
+        id := c.newValue(OpCall, argv, 0)
+        // attach callee symbol
+        // patch the last inserted instruction's Sym
+        c.b.Instrs[len(c.b.Instrs)-1].Val.Sym = e.Name
+        return id, nil
+    case *ast.UnaryExpr:
+        switch e.Op {
+        case ast.OpAddr:
+            if idn, ok := e.X.(*ast.Ident); ok {
+                v, err := c.readVar(idn.Name, c.b)
+                if err != nil { return 0, err }
+                return c.add(OpAddr, v), nil
+            }
+            return 0, fmt.Errorf("address-of unsupported operand")
+        case ast.OpDeref:
+            ptr, err := c.buildExpr(e.X)
+            if err != nil { return 0, err }
+            return c.add(OpLoad, ptr), nil
         }
     }
     return 0, fmt.Errorf("unsupported expr")
@@ -504,6 +566,101 @@ func (c *buildCtx) buildDoWhile(s *ast.DoWhileStmt) error {
     // continue at exit
     c.b = exitB
     c.sealBlock(condB)
+    c.sealBlock(exitB)
+    return nil
+}
+
+func (c *buildCtx) buildSwitch(s *ast.SwitchStmt) error {
+    f := c.f
+    // Evaluate tag
+    tag, err := c.buildExpr(s.Tag)
+    if err != nil { return err }
+    exitB := f.newBlock("switch.end")
+    // Create blocks for cases
+    caseBlocks := make([]*BasicBlock, len(s.Cases))
+    for i := range s.Cases { caseBlocks[i] = f.newBlock(fmt.Sprintf("case.%d", i)) }
+    var defaultB *BasicBlock
+    if s.Default != nil { defaultB = f.newBlock("default") }
+    // Build compare chain
+    // Start from a dispatch block (current)
+    nextB := defaultB
+    if nextB == nil { nextB = exitB }
+    // We'll create a sequence of cmp blocks in reverse to chain else branches
+    for i := len(s.Cases) - 1; i >= 0; i-- {
+        cmpB := f.newBlock(fmt.Sprintf("sw.cmp.%d", i))
+        // jump from current to first cmp if building first, else link previous
+        if i == len(s.Cases)-1 {
+            // from current block to cmpB
+            ci := blockIndexOf(f, cmpB)
+            c.b.Instrs = append(c.b.Instrs, Instr{Res: -1, Val: Value{Op: OpJmp, Args: []ValueID{ValueID(ci)}}})
+            f.addEdge(c.b, cmpB)
+        }
+        // In cmpB, compare tag equals any of the case values (chain OR inside the block)
+        c.b = cmpB
+        var fall *BasicBlock = nextB
+        // For each value in this case
+        for vi, v := range s.Cases[i].Values {
+            tblock := caseBlocks[i]
+            // build compare
+            cv := c.iconst(v)
+            cond := c.add(OpEq, tag, cv)
+            ti := blockIndexOf(f, tblock)
+            fi := -1
+            // false target is either next comparison within this same case-values list or the overall nextB
+            if vi == len(s.Cases[i].Values)-1 {
+                fi = blockIndexOf(f, fall)
+            } else {
+                // create an inner cmp block for next value
+                inner := f.newBlock(fmt.Sprintf("sw.cmp.%d.%d", i, vi))
+                fi = blockIndexOf(f, inner)
+                fall = inner
+            }
+            c.b.Instrs = append(c.b.Instrs, Instr{Res: -1, Val: Value{Op: OpJnz, Args: []ValueID{cond, ValueID(ti), ValueID(fi)}}})
+            f.addEdge(c.b, tblock)
+            f.addEdge(c.b, f.Blocks[fi])
+            // move to inner for next value if any
+            if vi < len(s.Cases[i].Values)-1 {
+                c.b = f.Blocks[fi]
+            }
+        }
+        nextB = cmpB
+    }
+    // At this point, control reaches nextB to start comparisons; we already linked entry to first cmp
+    // Build case bodies
+    // Push break target
+    c.breakTargets = append(c.breakTargets, exitB)
+    for i, cc := range s.Cases {
+        c.b = caseBlocks[i]
+        if err := c.buildBlock(cc.Body); err != nil { return err }
+        // If body not terminated, fall through to next case or default/exit
+        if !c.b.terminated() {
+            var ft *BasicBlock
+            if i+1 < len(caseBlocks) {
+                ft = caseBlocks[i+1]
+            } else if defaultB != nil {
+                ft = defaultB
+            } else {
+                ft = exitB
+            }
+            fi := blockIndexOf(f, ft)
+            c.b.Instrs = append(c.b.Instrs, Instr{Res: -1, Val: Value{Op: OpJmp, Args: []ValueID{ValueID(fi)}}})
+            f.addEdge(c.b, ft)
+        }
+    }
+    // default body
+    if defaultB != nil {
+        c.b = defaultB
+        if err := c.buildBlock(s.Default); err != nil { return err }
+        if !c.b.terminated() {
+            ei := blockIndexOf(f, exitB)
+            c.b.Instrs = append(c.b.Instrs, Instr{Res: -1, Val: Value{Op: OpJmp, Args: []ValueID{ValueID(ei)}}})
+            f.addEdge(c.b, exitB)
+        }
+    }
+    // pop break
+    c.breakTargets = c.breakTargets[:len(c.breakTargets)-1]
+    // continue at exit
+    c.b = exitB
     c.sealBlock(exitB)
     return nil
 }

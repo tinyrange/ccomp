@@ -77,7 +77,8 @@ func dceFunc(f *Function) {
                 if ins.Val.Op == OpRet { out = append(out, ins); continue }
                 if ins.Res < 0 { out = append(out, ins); continue }
                 // No side effects in Phase 1 ops; can delete if unused
-                if ui.uses[ins.Res] == 0 && ins.Val.Op != OpParam {
+                // Do not DCE calls even if result unused
+                if ui.uses[ins.Res] == 0 && ins.Val.Op != OpParam && ins.Val.Op != OpCall {
                     changed = true
                     continue
                 }

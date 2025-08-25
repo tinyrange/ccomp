@@ -14,6 +14,13 @@ func EmitModule(m *ir.Module) (string, error) {
     for _, f := range m.Funcs {
         if err := emitFunc(&b, f); err != nil { return "", err }
     }
+    if len(m.Globals) > 0 {
+        b.WriteString(".data\n")
+        for _, g := range m.Globals {
+            fmt.Fprintf(&b, ".globl %s\n%s:\n", g.Name, g.Name)
+            fmt.Fprintf(&b, "  .quad %d\n", g.Init)
+        }
+    }
     return b.String(), nil
 }
 
@@ -165,6 +172,78 @@ func emitFunc(b *strings.Builder, f *ir.Function) error {
                 }
             case ir.OpParam:
                 // already spilled in prologue
+            case ir.OpAddr:
+                // address of SSA slot of arg0 -> dest; ensure base value is materialized to its slot
+                base := ins.Val.Args[0]
+                offBase := slotOffset(base, frameSize)
+                // materialize base to its slot if needed
+                if cst, isC := isConst(bb, base); isC {
+                    fmt.Fprintf(b, "  mov $%d, %%rax\n", cst)
+                    fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", offBase)
+                } else if br, ok := alloc.regOf[base]; ok {
+                    fmt.Fprintf(b, "  mov %s, %d(%%rbp)\n", br, offBase)
+                } // else already in slot
+                if r, ok := alloc.regOf[ins.Res]; ok {
+                    fmt.Fprintf(b, "  lea %d(%%rbp), %s\n", offBase, r)
+                } else {
+                    off := slotOffset(ins.Res, frameSize)
+                    fmt.Fprintf(b, "  lea %d(%%rbp), %%rax\n", offBase)
+                    fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", off)
+                }
+            case ir.OpGlobalAddr:
+                if r, ok := alloc.regOf[ins.Res]; ok {
+                    fmt.Fprintf(b, "  lea %s(%%rip), %s\n", ins.Val.Sym, r)
+                } else {
+                    off := slotOffset(ins.Res, frameSize)
+                    fmt.Fprintf(b, "  lea %s(%%rip), %%rax\n", ins.Val.Sym)
+                    fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", off)
+                }
+            case ir.OpLoad:
+                ptr := ins.Val.Args[0]
+                // Load pointer into rcx
+                if rr, ok := alloc.regOf[ptr]; ok {
+                    fmt.Fprintf(b, "  mov %s, %%rcx\n", rr)
+                } else if cst, isC := isConst(bb, ptr); isC {
+                    // treat as absolute? we don't support immediate addresses
+                    fmt.Fprintf(b, "  mov $%d, %%rcx\n", cst)
+                } else {
+                    off := slotOffset(ptr, frameSize)
+                    fmt.Fprintf(b, "  mov %d(%%rbp), %%rcx\n", off)
+                }
+                if r, ok := alloc.regOf[ins.Res]; ok {
+                    fmt.Fprintf(b, "  mov (%%rcx), %s\n", r)
+                } else {
+                    off := slotOffset(ins.Res, frameSize)
+                    fmt.Fprintf(b, "  mov (%%rcx), %%rax\n")
+                    fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", off)
+                }
+            case ir.OpCall:
+                if len(ins.Val.Args) > len(argRegs) {
+                    return fmt.Errorf("more than 6 integer args not supported")
+                }
+                // move args into registers
+                for i, a := range ins.Val.Args {
+                    if cst, isC := isConst(bb, a); isC {
+                        fmt.Fprintf(b, "  mov $%d, %s\n", cst, argRegs[i])
+                    } else if rr, ok := alloc.regOf[a]; ok {
+                        fmt.Fprintf(b, "  mov %s, %s\n", rr, argRegs[i])
+                    } else {
+                        off := slotOffset(a, frameSize)
+                        fmt.Fprintf(b, "  mov %d(%%rbp), %s\n", off, argRegs[i])
+                    }
+                }
+                // align stack and call
+                b.WriteString("  sub $8, %rsp\n")
+                fmt.Fprintf(b, "  call %s\n", ins.Val.Sym)
+                b.WriteString("  add $8, %rsp\n")
+                if ins.Res >= 0 {
+                    if r, ok := alloc.regOf[ins.Res]; ok {
+                        fmt.Fprintf(b, "  mov %%rax, %s\n", r)
+                    } else {
+                        off := slotOffset(ins.Res, frameSize)
+                        fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", off)
+                    }
+                }
             case ir.OpRet:
                 // Arg0 -> rax
                 id := ins.Val.Args[0]

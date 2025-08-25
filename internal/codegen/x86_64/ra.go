@@ -12,9 +12,17 @@ type allocation struct {
 }
 
 func allocateRegisters(f *ir.Function) allocation {
-    // Conservative: if function has multiple basic blocks, skip register allocation
-    // to avoid incorrect live range analysis across control flow for now.
+    // Conservative: if multi-block or function contains calls, skip register allocation.
     if len(f.Blocks) > 1 {
+        return allocation{regOf: map[ir.ValueID]string{}}
+    }
+    hasCall := false
+    for _, b := range f.Blocks {
+        for _, ins := range b.Instrs {
+            if ins.Val.Op == ir.OpCall { hasCall = true; break }
+        }
+    }
+    if hasCall {
         return allocation{regOf: map[ir.ValueID]string{}}
     }
     // Flatten instructions
