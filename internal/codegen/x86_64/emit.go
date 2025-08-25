@@ -3,6 +3,7 @@ package x86_64
 import (
     "fmt"
     "strings"
+    "unsafe"
 
     "github.com/tinyrange/cc/internal/ir"
 )
@@ -138,6 +139,10 @@ func emitFunc(b *strings.Builder, f *ir.Function) error {
                 emitBitwise(b, alloc, bb, frameSize, ins)
             case ir.OpShl, ir.OpShr:
                 emitShift(b, alloc, bb, frameSize, ins)
+            case ir.OpNot:
+                emitBitwiseNot(b, alloc, bb, frameSize, ins)
+            case ir.OpLogicalNot:
+                emitLogicalNot(b, alloc, bb, frameSize, ins)
             case ir.OpDiv:
                 // signed division rdx:rax / rcx -> rax (special path)
                 lhs := ins.Val.Args[0]
@@ -370,6 +375,43 @@ func emitFunc(b *strings.Builder, f *ir.Function) error {
                 fi := int(ins.Val.Args[2])
                 if ti >= 0 && ti < len(f.Blocks) { fmt.Fprintf(b, "  jne %s\n", f.Blocks[ti].Name) }
                 if fi >= 0 && fi < len(f.Blocks) { fmt.Fprintf(b, "  jmp %s\n", f.Blocks[fi].Name) }
+            case ir.OpFConst:
+                // Float constant - for now, just store the bits (not used directly)
+                if r, ok := alloc.regOf[ins.Res]; ok {
+                    fmt.Fprintf(b, "  mov $%d, %s\n", ins.Val.Const, r)
+                } else {
+                    off := slotOffset(ins.Res, frameSize)
+                    fmt.Fprintf(b, "  mov $%d, %%rax\n", ins.Val.Const)
+                    fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", off)
+                }
+            case ir.OpF2I:
+                // Float to int conversion - should handle constant-folded float values
+                src := ins.Val.Args[0]
+                
+                // After optimization, the source should be a float constant (OpFConst)
+                if srcInstr, ok := findInstr(bb, src); ok && srcInstr.Val.Op == ir.OpFConst {
+                    // Convert float constant to integer at compile time
+                    bits := uint64(srcInstr.Val.Const)
+                    floatVal := *(*float64)(unsafe.Pointer(&bits))
+                    intVal := int64(floatVal)
+                    
+                    if r, ok := alloc.regOf[ins.Res]; ok {
+                        fmt.Fprintf(b, "  mov $%d, %s\n", intVal, r)
+                    } else {
+                        off := slotOffset(ins.Res, frameSize)
+                        fmt.Fprintf(b, "  mov $%d, %%rax\n", intVal)
+                        fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", off)
+                    }
+                } else {
+                    return fmt.Errorf("OpF2I with non-constant float not supported")
+                }
+            case ir.OpI2F:
+                // Int to float conversion - not needed for current tests
+                return fmt.Errorf("OpI2F not implemented yet")
+            case ir.OpFAdd, ir.OpFSub, ir.OpFMul, ir.OpFDiv:
+                // After constant folding optimization, these should not appear in the IR
+                // They should have been replaced with OpFConst
+                return fmt.Errorf("floating point arithmetic operations should have been constant-folded")
             default:
                 // ignore
             }
@@ -590,4 +632,68 @@ func emitShift(b *strings.Builder, alloc allocation, bb *ir.BasicBlock, frameSiz
         }
     }
     fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", offDest)
+}
+
+func emitBitwiseNot(b *strings.Builder, alloc allocation, bb *ir.BasicBlock, frameSize int, ins ir.Instr) {
+    // Bitwise NOT: ~x - invert all bits
+    src := ins.Val.Args[0]
+    
+    // Load operand into rax
+    if cst, isC := isConst(bb, src); isC {
+        fmt.Fprintf(b, "  mov $%d, %%rax\n", cst)
+    } else if r, ok := alloc.regOf[src]; ok {
+        fmt.Fprintf(b, "  mov %s, %%rax\n", r)
+    } else {
+        off := slotOffset(src, frameSize)
+        fmt.Fprintf(b, "  mov %d(%%rbp), %%rax\n", off)
+    }
+    
+    // Apply bitwise NOT
+    b.WriteString("  not %rax\n")
+    
+    // Store result
+    if r, ok := alloc.regOf[ins.Res]; ok {
+        fmt.Fprintf(b, "  mov %%rax, %s\n", r)
+    } else {
+        off := slotOffset(ins.Res, frameSize)
+        fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", off)
+    }
+}
+
+func emitLogicalNot(b *strings.Builder, alloc allocation, bb *ir.BasicBlock, frameSize int, ins ir.Instr) {
+    // Logical NOT: !x - convert 0 to 1, non-zero to 0
+    src := ins.Val.Args[0]
+    
+    // Load operand into rax
+    if cst, isC := isConst(bb, src); isC {
+        fmt.Fprintf(b, "  mov $%d, %%rax\n", cst)
+    } else if r, ok := alloc.regOf[src]; ok {
+        fmt.Fprintf(b, "  mov %s, %%rax\n", r)
+    } else {
+        off := slotOffset(src, frameSize)
+        fmt.Fprintf(b, "  mov %d(%%rbp), %%rax\n", off)
+    }
+    
+    // Test if value is zero: cmp $0, %rax then sete %al
+    b.WriteString("  cmp $0, %rax\n")
+    b.WriteString("  sete %al\n")  // Set %al to 1 if equal to zero, 0 otherwise
+    b.WriteString("  movzx %al, %rax\n")  // Zero-extend %al to %rax
+    
+    // Store result
+    if r, ok := alloc.regOf[ins.Res]; ok {
+        fmt.Fprintf(b, "  mov %%rax, %s\n", r)
+    } else {
+        off := slotOffset(ins.Res, frameSize)
+        fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", off)
+    }
+}
+
+// findInstr searches for an instruction with the given result ID in the basic block
+func findInstr(bb *ir.BasicBlock, id ir.ValueID) (*ir.Instr, bool) {
+    for i := range bb.Instrs {
+        if bb.Instrs[i].Res == id {
+            return &bb.Instrs[i], true
+        }
+    }
+    return nil, false
 }

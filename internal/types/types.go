@@ -12,6 +12,8 @@ const (
     Uint16
     Uint32
     Uint64
+    Float32
+    Float64
     Ptr
     Byte // alias for Uint8
 )
@@ -41,9 +43,9 @@ func (t Type) Size() int {
         return 1
     case Int16, Uint16:
         return 2
-    case Int32, Uint32:
+    case Int32, Uint32, Float32:
         return 4
-    case Int64, Uint64:
+    case Int64, Uint64, Float64:
         return 8
     case Ptr:
         // 64-bit pointers
@@ -65,6 +67,8 @@ func (t Type) IsPointer() bool { return t.K == Ptr }
 
 func ByteT() Type { return Type{K: Byte} }
 func CharT() Type { return Type{K: Byte} } // char is unsigned byte by default
+func Float64T() Type { return Type{K: Float64} }
+func DoubleT() Type { return Type{K: Float64} } // double is 64-bit float
 
 // IsSigned returns true for signed integer types
 func (t Type) IsSigned() bool {
@@ -91,6 +95,11 @@ func (t Type) IsInteger() bool {
     return t.IsSigned() || t.IsUnsigned()
 }
 
+// IsFloat returns true for floating point types
+func (t Type) IsFloat() bool {
+    return t.K == Float32 || t.K == Float64
+}
+
 // StructType represents a struct type (forward declaration to avoid import cycle)
 type StructType struct {
     Name string
@@ -100,17 +109,23 @@ type StructType struct {
 // FromBasicType converts AST BasicType to internal Type
 // Note: This will need ast import - will be updated in ir.go where it's used
 func FromBasicType(bt int, isPtr bool) Type {
-    // bt values: 0=BTInt, 1=BTChar (from ast.go BasicType constants)
+    // bt values: 0=BTInt, 1=BTChar, 2=BTDouble (from ast.go BasicType constants)
     if isPtr {
-        if bt == 1 { // BTChar
+        switch bt {
+        case 1: // BTChar
             return PointerTo(CharT())
-        } else { // BTInt
+        case 2: // BTDouble
+            return PointerTo(DoubleT())
+        default: // BTInt
             return PointerTo(Int())
         }
     } else {
-        if bt == 1 { // BTChar
+        switch bt {
+        case 1: // BTChar
             return CharT()
-        } else { // BTInt
+        case 2: // BTDouble
+            return DoubleT()
+        default: // BTInt
             return Int()
         }
     }

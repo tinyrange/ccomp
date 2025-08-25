@@ -97,7 +97,7 @@ func (l *Lexer) Next() Token {
     case '/':
         tok.Type, tok.Lex = SLASH, string(ch); l.read()
     case '!':
-        if l.peek() == '=' { l.read(); tok.Type, tok.Lex = NEQ, "!="; l.read() } else { tok.Type, tok.Lex = ILLEGAL, string(ch); l.read() }
+        if l.peek() == '=' { l.read(); tok.Type, tok.Lex = NEQ, "!="; l.read() } else { tok.Type, tok.Lex = BANG, string(ch); l.read() }
     case '<':
         if l.peek() == '<' { l.read(); tok.Type, tok.Lex = SHL, "<<"; l.read() } else if l.peek() == '=' { l.read(); tok.Type, tok.Lex = LE, "<="; l.read() } else { tok.Type, tok.Lex = LT, "<"; l.read() }
     case '>':
@@ -172,6 +172,7 @@ func (l *Lexer) Next() Token {
             switch lex {
             case "int": tok.Type = KW_INT
             case "char": tok.Type = KW_CHAR
+            case "double": tok.Type = KW_DOUBLE
             case "struct": tok.Type = KW_STRUCT
             case "enum": tok.Type = KW_ENUM
             case "typedef": tok.Type = KW_TYPEDEF
@@ -198,7 +199,18 @@ func (l *Lexer) Next() Token {
                 num = append(num, l.ch)
                 l.read()
             }
-            tok.Type, tok.Lex = INT, string(num)
+            // Check for floating point
+            if l.ch == '.' {
+                num = append(num, l.ch)
+                l.read()
+                for unicode.IsDigit(l.ch) {
+                    num = append(num, l.ch)
+                    l.read()
+                }
+                tok.Type, tok.Lex = FLOAT, string(num)
+            } else {
+                tok.Type, tok.Lex = INT, string(num)
+            }
             tok.Line, tok.Col = startLine, startCol
         } else {
             tok.Type, tok.Lex = ILLEGAL, string(ch)

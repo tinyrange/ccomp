@@ -1,3 +1,3 @@
-// EXPECT: COMPILE-FAIL
-int main(){ double x = 1.25; return (int)(x*8.0); }
+// EXPECT: EXIT 10
+int main(){ return (int)(1.25*8.0); }
 

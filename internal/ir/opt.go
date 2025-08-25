@@ -1,5 +1,9 @@
 package ir
 
+import (
+    "unsafe"
+)
+
 // Phase 2 basic optimizations: constant folding/propagation and DCE.
 
 // Optimize applies simple SSA-based optimizations to all functions.
@@ -54,6 +58,26 @@ func constFoldFunc(f *Function) {
                 b.Instrs[i].Val.Op = OpConst
                 b.Instrs[i].Val.Args = nil
                 b.Instrs[i].Val.Const = k
+            case OpFAdd, OpFSub, OpFMul, OpFDiv:
+                // Floating point constant folding
+                if len(ins.Val.Args) != 2 { continue }
+                a := findFConst(b, ins.Val.Args[0])
+                c := findFConst(b, ins.Val.Args[1])
+                if a == nil || c == nil { continue }
+                var result float64
+                switch ins.Val.Op {
+                case OpFAdd: result = *a + *c
+                case OpFSub: result = *a - *c
+                case OpFMul: result = *a * *c
+                case OpFDiv:
+                    if *c == 0.0 { continue }
+                    result = *a / *c
+                }
+                // Convert result to bits and replace with FConst
+                bits := int64(*(*uint64)(unsafe.Pointer(&result)))
+                b.Instrs[i].Val.Op = OpFConst
+                b.Instrs[i].Val.Args = nil
+                b.Instrs[i].Val.Const = bits
             }
         }
     }
@@ -63,6 +87,18 @@ func findConst(b *BasicBlock, id ValueID) *int64 {
     for _, ins := range b.Instrs {
         if ins.Res == id && ins.Val.Op == OpConst {
             v := ins.Val.Const
+            return &v
+        }
+    }
+    return nil
+}
+
+func findFConst(b *BasicBlock, id ValueID) *float64 {
+    for _, ins := range b.Instrs {
+        if ins.Res == id && ins.Val.Op == OpFConst {
+            // Convert bits back to float64
+            bits := uint64(ins.Val.Const)
+            v := *(*float64)(unsafe.Pointer(&bits))
             return &v
         }
     }

@@ -10,12 +10,14 @@ const (
 	// Identifiers + literals
 	IDENT
 	INT
+	FLOAT
 	CHAR
 	STRING
 
 	// Keywords
 	KW_INT
 	KW_CHAR
+	KW_DOUBLE
 	KW_STRUCT
 	KW_ENUM
 	KW_TYPEDEF
@@ -61,6 +63,7 @@ const (
 	PIPE   // |
 	CARET  // ^
 	TILDE  // ~
+	BANG   // !
 
 	// Comparison
 	EQEQ // ==

@@ -145,10 +145,11 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
         if err != nil { return nil, err }
         if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
         return &ast.StructVarDeclStmt{Name: varNameTok.Lex, StructType: structNameTok.Lex}, nil
-    case lexer.KW_INT, lexer.KW_CHAR:
+    case lexer.KW_INT, lexer.KW_CHAR, lexer.KW_DOUBLE:
         // declaration: T x; | T x = expr; | T a[N];
         bt := ast.BTInt
         if p.tok.Type == lexer.KW_CHAR { bt = ast.BTChar }
+        if p.tok.Type == lexer.KW_DOUBLE { bt = ast.BTDouble }
         posTok := p.tok
         p.next()
         ptr := false
@@ -482,6 +483,11 @@ func (p *Parser) parseFactor() (ast.Expr, error) {
         lit := &ast.IntLit{Value: v}
         p.next()
         return lit, nil
+    case lexer.FLOAT:
+        v, _ := strconv.ParseFloat(p.tok.Lex, 64)
+        lit := &ast.FloatLit{Value: v}
+        p.next()
+        return lit, nil
     case lexer.CHAR:
         // p.tok.Lex holds the resolved single rune
         r := []rune(p.tok.Lex)
@@ -506,9 +512,10 @@ func (p *Parser) parseFactor() (ast.Expr, error) {
     case lexer.LPAREN:
         p.next()
         // check for cast: ( type [*] ) unary
-        if p.tok.Type == lexer.KW_INT || p.tok.Type == lexer.KW_CHAR {
+        if p.tok.Type == lexer.KW_INT || p.tok.Type == lexer.KW_CHAR || p.tok.Type == lexer.KW_DOUBLE {
             bt := ast.BTInt
             if p.tok.Type == lexer.KW_CHAR { bt = ast.BTChar }
+            if p.tok.Type == lexer.KW_DOUBLE { bt = ast.BTDouble }
             p.next()
             cptr := false
             for p.tok.Type == lexer.STAR { p.next(); cptr = true }
@@ -560,6 +567,12 @@ func (p *Parser) parseUnary() (ast.Expr, error) {
         x, err := p.parseUnary()
         if err != nil { return nil, err }
         return &ast.UnaryExpr{Op: ast.OpBitNot, X: x}, nil
+    }
+    if p.tok.Type == lexer.BANG {
+        p.next()
+        x, err := p.parseUnary()
+        if err != nil { return nil, err }
+        return &ast.UnaryExpr{Op: ast.OpLogicalNot, X: x}, nil
     }
     return p.parseFactor()
 }

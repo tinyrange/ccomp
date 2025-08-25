@@ -102,6 +102,9 @@ func (*Ident) isExpr() {}
 type IntLit struct { Value int64 }
 func (*IntLit) isExpr() {}
 
+type FloatLit struct { Value float64 }
+func (*FloatLit) isExpr() {}
+
 type StringLit struct { Value string }
 func (*StringLit) isExpr() {}
 
@@ -141,6 +144,7 @@ const (
     OpDeref
     OpNeg
     OpBitNot
+    OpLogicalNot
 )
 
 type UnaryExpr struct { Op UnOp; X Expr }
@@ -199,6 +203,7 @@ type BasicType int
 const (
     BTInt BasicType = iota
     BTChar
+    BTDouble
 )
 
 type Pos struct { Line int; Col int }

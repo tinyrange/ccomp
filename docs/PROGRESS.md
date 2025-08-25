@@ -7,10 +7,10 @@ This report summarizes the current state of the SSA-based C compiler. We have a 
 ## Implemented
 
 - Frontend
-  - Lexer: keywords `int char struct enum typedef return if else while for do break continue switch case default`, punctuation `(){}[],:;.`, operators `= + - * / < <= > >= == != && || & | ^ ~ << >>`.
-  - Parser: functions with `int` params; blocks; decls/assignments; `return`; control-flow `if/else`, `while`, `for`, `do/while`, `break`, `continue`, `switch/case/default`; expressions with precedence including logical short-circuit, bitwise, and shifts; calls `f(a,b)`; unary `-`, `~`, address-of `&`, deref `*`; minimal arrays `int a[N]; a[i]; a[i]=...`; struct definitions `struct S { int x; int y; }`, field access `s.field`, field assignment `s.field = value`; enum definitions `enum E { A=1, B=2 }`; typedef declarations `typedef int i32`.
+  - Lexer: keywords `int char struct enum typedef return if else while for do break continue switch case default`, punctuation `(){}[],:;.`, operators `= + - * / < <= > >= == != && || & | ^ ~ << >> !`.
+  - Parser: functions with `int` params; blocks; decls/assignments; `return`; control-flow `if/else`, `while`, `for`, `do/while`, `break`, `continue`, `switch/case/default`; expressions with precedence including logical short-circuit, bitwise, and shifts; calls `f(a,b)`; unary `-`, `~`, `!`, address-of `&`, deref `*`; minimal arrays `int a[N]; a[i]; a[i]=...`; struct definitions `struct S { int x; int y; }`, field access `s.field`, field assignment `s.field = value`; enum definitions `enum E { A=1, B=2 }`; typedef declarations `typedef int i32`.
 - IR (SSA)
-  - Values/ops: arithmetic `add sub mul div`; compare `eq ne lt le gt ge`; logic/bitwise/shift `and or xor shl shr not`; memory `load store`; control-flow `phi jmp jnz`; calls `call`; addressing `addr globaladdr slotaddr`; misc `const param copy`.
+  - Values/ops: arithmetic `add sub mul div`; compare `eq ne lt le gt ge`; logic/bitwise/shift `and or xor shl shr not logicalnot`; memory `load store`; control-flow `phi jmp jnz`; calls `call`; addressing `addr globaladdr slotaddr`; misc `const param copy`.
   - CFG on basic blocks: `Preds`/`Succs` with helper `addEdge`.
 - SSA construction
   - Direct SSA during AST traversal (Braun-style read/write per block).
@@ -20,7 +20,7 @@ This report summarizes the current state of the SSA-based C compiler. We have a 
 - Optimizations (Phase 2)
   - Constant folding/propagation (arith + bitwise + shifts where both operands constant).
   - Dead code elimination (keeps params, calls, and stores; no-side-effect values removed).
-  - Simple linear-scan register allocation for single-block functions; conservative spill-only when multi-block or calls present (correctness-first).
+  - SSA-aware linear-scan register allocation across CFG with proper call clobber handling; spills values that span calls.
   - Peephole: immediates for `add/sub/imul` where applicable.
 - Backend (x86_64, SysV AMD64)
   - Prologue/epilogue; 8-byte-per-SSA slot stack frame; params from arg regs to SSA homes.
@@ -32,9 +32,9 @@ This report summarizes the current state of the SSA-based C compiler. We have a 
   - Sandboxed builds using local Go caches; `Makefile` targets `build`, `run`, `e2e`, `clean`, `test`.
   - Runtime `_start` for `-nostdlib` linking.
 - Tests
-  - 43 tests in `tests/` with expectations: `// EXPECT: EXIT <n>` or `// EXPECT: COMPILE-FAIL`.
+  - 45 tests in `tests/` with expectations: `// EXPECT: EXIT <n>` or `// EXPECT: COMPILE-FAIL`.
   - Runner `tools/run_tests.sh` compiles, links, runs, and checks results using a 1s timeout wrapper to avoid hangs. `make test` wraps it.
-  - Recent test additions: pointer arithmetic validation, enum constant usage.
+  - Recent test additions: logical NOT operator (`!`) validation, struct/enum/typedef functionality, floating point literal casting.
 
 ## Recently Completed (Phase 3 Extensions)
 
@@ -45,10 +45,15 @@ This report summarizes the current state of the SSA-based C compiler. We have a 
 - Struct definitions: complete parsing and IR layout calculation with field offset computation.
 - Enum constants: full implementation with module-level storage and identifier resolution (e.g., `enum E { A=1, B=2 }; return B;` works).
 - Typedef declarations: parsing implemented (type aliases not yet functional).
+- Register allocation: upgraded from single-block-only to full SSA-aware linear scan supporting multi-block functions and proper call clobber handling.
+- Expression system: added logical NOT operator (`!`) with proper code generation.
+- Floating point literals: added lexer, parser, and AST support for floating point literals with compile-time evaluation (enables `(int)3.5` casting).
+- Floating point arithmetic: implemented constant folding optimization for `OpFAdd`, `OpFSub`, `OpFMul`, `OpFDiv` operations.
+- Float-to-int casting: added `OpF2I` conversion with compile-time constant folding support.
 
 ## What Works End-to-End
 
-- Expressions: integer arithmetic; comparisons; logical short-circuit `&&/||`; bitwise `& | ^` and unary `~`; shifts `<< >>`; parentheses respected.
+- Expressions: integer arithmetic; comparisons; logical short-circuit `&&/||` and unary `!`; bitwise `& | ^` and unary `~`; shifts `<< >>`; floating point literals and arithmetic with compile-time constant folding; float-to-int casting; parentheses respected.
 - Declarations/assignments: local `int`/`char` variables; minimal arrays `int a[N]` with `a[i]` r/w backed by frame slots; pointers `&x`, `*p` with proper element-size scaling.
 - Control flow: `if/else`, `while`, `for`, `do/while`, `break`, `continue`, and `switch/case/default` (fallthrough by omission) with correct CFG/phi.
 - Calls/recursion: direct calls with SysV arg passing; recursion works (factorial test returns 120).
@@ -56,20 +61,20 @@ This report summarizes the current state of the SSA-based C compiler. We have a 
 - Structs: `struct S { int x; int y; };` definitions with field layout; `struct S s;` variable declarations; `s.field` access and `s.field = value` assignments.
 - Enums: `enum E { A=1, B=2 };` definitions with constants that resolve correctly (returns proper values).
 - Typedefs: `typedef int i32; i32 x = 42;` type alias definitions and usage in variable declarations.
-- Sanity: `make e2e` returns exit code 14 for the sample; full suite: 44 tests passed.
+- Sanity: `make e2e` returns exit code 14 for the sample; full suite: all 45 tests passing.
 
 ## Known Limitations (remaining work)
 
-- Type system: enhanced types exist but most operations still default to 64-bit int behavior; no signed/unsigned distinction in operations; no casts.
+- Type system: enhanced types exist but most operations still default to 64-bit int behavior; no signed/unsigned distinction in operations.
 - Memory model: no alias analysis; struct memory layout calculated and used for field access.
-- No union; no varargs; no floating-point.
-- RA: conservative (spill-only) on multi-block/calls; revisit with SSA-aware linear scan.
+- Floating point: runtime floating point operations with variables not supported (only compile-time constant expressions).
+- No union; no varargs.
 - Diagnostics: parser/IR errors are minimal; no SSA validator.
 
 ## Next Steps
 
-1. **Expressions**: logical `!` and casts; refine comparisons for signed/unsigned as types solidify.
-2. **Register allocation**: re-enable SSA-aware linear scan across CFG with call clobber handling; reduce spills.
+1. **Expressions**: ✓ logical `!` implemented; ✓ floating point literals and casting; ✓ float-to-int casts with compile-time constant folding; casts work for basic types; refine comparisons for signed/unsigned as types solidify.
+2. **Register allocation**: ✓ implemented SSA-aware linear scan across CFG with call clobber handling.
 3. **Optimizations**: SCCP, simple GVN, and peepholes for address arithmetic and copy cleanup.
 4. **Tooling**: SSA validator and improved diagnostics.
 

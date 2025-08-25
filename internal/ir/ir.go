@@ -2,6 +2,7 @@ package ir
 
 import (
     "fmt"
+    "unsafe"
     "github.com/tinyrange/cc/internal/ast"
     ty "github.com/tinyrange/cc/internal/types"
 )
@@ -89,10 +90,15 @@ type Value struct {
 type Op int
 const (
     OpConst Op = iota
+    OpFConst  // floating point constant
     OpAdd
     OpSub
     OpMul
     OpDiv
+    OpFAdd    // floating point add
+    OpFSub    // floating point subtract
+    OpFMul    // floating point multiply
+    OpFDiv    // floating point divide
     // comparisons produce 0/1
     OpEq
     OpNe
@@ -120,6 +126,9 @@ const (
     OpGlobalAddr // address of global; Sym=name
     OpSlotAddr // address of a frame slot for SSA id; no materialize
     OpStore8
+    OpLogicalNot // logical NOT (!); converts 0 to 1, non-zero to 0
+    OpF2I        // float to int conversion
+    OpI2F        // int to float conversion
 )
 
 type Instr struct {
@@ -262,6 +271,12 @@ func (c *buildCtx) newValue(op Op, args []ValueID, k int64) ValueID {
 
 func (c *buildCtx) add(op Op, args ...ValueID) ValueID { return c.newValue(op, args, 0) }
 func (c *buildCtx) iconst(v int64) ValueID { return c.newValue(OpConst, nil, v) }
+
+func (c *buildCtx) fconst(v float64) ValueID { 
+    // Store float64 bits as int64
+    bits := int64(*(*uint64)(unsafe.Pointer(&v)))
+    return c.newValue(OpFConst, nil, bits) 
+}
 
 func (c *buildCtx) writeVar(name string, blk *BasicBlock, id ValueID) {
     if c.curDef[blk] == nil { c.curDef[blk] = map[string]ValueID{} }
@@ -572,6 +587,9 @@ func (c *buildCtx) buildExprWithType(e ast.Expr) (ValueID, ty.Type, error) {
     switch e := e.(type) {
     case *ast.IntLit:
         return c.iconst(e.Value), ty.Int(), nil
+    case *ast.FloatLit:
+        // Create a floating point constant
+        return c.fconst(e.Value), ty.DoubleT(), nil
     case *ast.StringLit:
         // materialize string literal in module rodata and return its address
         lbl := c.internString(e.Value)
@@ -609,6 +627,11 @@ func (c *buildCtx) buildExprWithType(e ast.Expr) (ValueID, ty.Type, error) {
         if err != nil { return 0, ty.Int(), err }
         switch e.Op {
         case ast.OpAdd:
+            // floating point addition
+            if lt.IsFloat() || rt.IsFloat() {
+                // TODO: Type coercion - for now assume both are double
+                return c.add(OpFAdd, l, r), ty.DoubleT(), nil
+            }
             // pointer-aware addition: ptr +/- int => scale by elem size
             if lt.IsPointer() && !rt.IsPointer() {
                 sz := lt.ElemSize()
@@ -628,6 +651,10 @@ func (c *buildCtx) buildExprWithType(e ast.Expr) (ValueID, ty.Type, error) {
             }
             return c.add(OpAdd, l, r), ty.Int(), nil
         case ast.OpSub:
+            // floating point subtraction
+            if lt.IsFloat() || rt.IsFloat() {
+                return c.add(OpFSub, l, r), ty.DoubleT(), nil
+            }
             if lt.IsPointer() && !rt.IsPointer() {
                 sz := lt.ElemSize()
                 if sz > 1 {
@@ -648,8 +675,16 @@ func (c *buildCtx) buildExprWithType(e ast.Expr) (ValueID, ty.Type, error) {
             }
             return c.add(OpSub, l, r), ty.Int(), nil
         case ast.OpMul:
+            // floating point multiplication
+            if lt.IsFloat() || rt.IsFloat() {
+                return c.add(OpFMul, l, r), ty.DoubleT(), nil
+            }
             return c.add(OpMul, l, r), ty.Int(), nil
         case ast.OpDiv:
+            // floating point division
+            if lt.IsFloat() || rt.IsFloat() {
+                return c.add(OpFDiv, l, r), ty.DoubleT(), nil
+            }
             return c.add(OpDiv, l, r), ty.Int(), nil
         case ast.OpEq:
             return c.add(OpEq, l, r), ty.Int(), nil
@@ -819,6 +854,10 @@ func (c *buildCtx) buildExprWithType(e ast.Expr) (ValueID, ty.Type, error) {
             x, _, err := c.buildExprWithType(e.X)
             if err != nil { return 0, ty.Int(), err }
             return c.add(OpNot, x), ty.Int(), nil
+        case ast.OpLogicalNot:
+            x, _, err := c.buildExprWithType(e.X)
+            if err != nil { return 0, ty.Int(), err }
+            return c.add(OpLogicalNot, x), ty.Int(), nil
         }
     case *ast.CastExpr:
         v, st, err := c.buildExprWithType(e.X)
@@ -826,11 +865,41 @@ func (c *buildCtx) buildExprWithType(e ast.Expr) (ValueID, ty.Type, error) {
         // Build target type
         var tt ty.Type
         if e.Ptr {
-            if e.To == ast.BTChar { tt = ty.PointerTo(ty.ByteT()) } else { tt = ty.PointerTo(ty.Int()) }
+            switch e.To {
+            case ast.BTChar:
+                tt = ty.PointerTo(ty.ByteT())
+            case ast.BTDouble:
+                tt = ty.PointerTo(ty.DoubleT())
+            default:
+                tt = ty.PointerTo(ty.Int())
+            }
         } else {
-            if e.To == ast.BTChar { tt = ty.ByteT() } else { tt = ty.Int() }
+            switch e.To {
+            case ast.BTChar:
+                tt = ty.ByteT()
+            case ast.BTDouble:
+                tt = ty.DoubleT()
+            default:
+                tt = ty.Int()
+            }
         }
-        // For now, casts are mostly no-ops; if narrowing to char, mask to 0xFF
+        // Handle float-to-int conversion
+        if st.IsFloat() && !tt.IsFloat() && !tt.IsPointer() {
+            // float to int: use F2I conversion
+            conv := c.add(OpF2I, v)
+            if tt.Size() == 1 {
+                // mask low byte for char
+                m := c.iconst(0xFF)
+                return c.add(OpAnd, conv, m), tt, nil
+            }
+            return conv, tt, nil
+        }
+        // Handle int-to-float conversion
+        if !st.IsFloat() && !st.IsPointer() && tt.IsFloat() {
+            // int to float: use I2F conversion
+            return c.add(OpI2F, v), tt, nil
+        }
+        // For now, other casts are mostly no-ops; if narrowing to char, mask to 0xFF
         if !tt.IsPointer() && st.IsPointer() {
             // pointer to int: no-op
             return v, tt, nil
