@@ -114,6 +114,16 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
         for p.tok.Type == lexer.STAR { p.next() }
         nameTok, err := p.expect(lexer.IDENT)
         if err != nil { return nil, err }
+        // array declarator
+        if p.tok.Type == lexer.LBRACK {
+            p.next()
+            szTok, err := p.expect(lexer.INT)
+            if err != nil { return nil, err }
+            if _, err := p.expect(lexer.RBRACK); err != nil { return nil, err }
+            if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
+            v, _ := strconv.ParseInt(szTok.Lex, 10, 64)
+            return &ast.ArrayDeclStmt{Name: nameTok.Lex, Size: int(v)}, nil
+        }
         var init ast.Expr
         if p.tok.Type == lexer.ASSIGN {
             p.next()
@@ -260,6 +270,18 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
         // Try lookahead '='
         id := p.tok
         p.next()
+        if p.tok.Type == lexer.LBRACK {
+            // array element assignment
+            p.next()
+            idx, err := p.parseExpr()
+            if err != nil { return nil, err }
+            if _, err := p.expect(lexer.RBRACK); err != nil { return nil, err }
+            if _, err := p.expect(lexer.ASSIGN); err != nil { return nil, err }
+            val, err := p.parseExpr()
+            if err != nil { return nil, err }
+            if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
+            return &ast.ArrayAssignStmt{Name: id.Lex, Index: idx, Value: val}, nil
+        }
         if p.tok.Type == lexer.ASSIGN {
             p.next()
             v, err := p.parseExpr()
@@ -358,7 +380,16 @@ func (p *Parser) parseFactor() (ast.Expr, error) {
             if _, err := p.expect(lexer.RPAREN); err != nil { return nil, err }
             return &ast.CallExpr{Name: name, Args: args}, nil
         }
-        return &ast.Ident{Name: name}, nil
+        // support postfix indexing
+        var expr ast.Expr = &ast.Ident{Name: name}
+        for p.tok.Type == lexer.LBRACK {
+            p.next()
+            idx, err := p.parseExpr()
+            if err != nil { return nil, err }
+            if _, err := p.expect(lexer.RBRACK); err != nil { return nil, err }
+            expr = &ast.IndexExpr{Base: expr, Index: idx}
+        }
+        return expr, nil
     case lexer.INT:
         v, _ := strconv.ParseInt(p.tok.Lex, 10, 64)
         lit := &ast.IntLit{Value: v}

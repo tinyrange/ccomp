@@ -31,8 +31,14 @@ func (*ExprStmt) isStmt() {}
 type DeclStmt struct { Name string; Init Expr }
 func (*DeclStmt) isStmt() {}
 
+type ArrayDeclStmt struct { Name string; Size int }
+func (*ArrayDeclStmt) isStmt() {}
+
 type AssignStmt struct { Name string; Value Expr }
 func (*AssignStmt) isStmt() {}
+
+type ArrayAssignStmt struct { Name string; Index Expr; Value Expr }
+func (*ArrayAssignStmt) isStmt() {}
 
 type IfStmt struct {
     Cond Expr
@@ -120,6 +126,9 @@ const (
 
 type UnaryExpr struct { Op UnOp; X Expr }
 func (*UnaryExpr) isExpr() {}
+
+type IndexExpr struct { Base Expr; Index Expr }
+func (*IndexExpr) isExpr() {}
 
 type GlobalDecl struct { Name string; Init *IntLit }
 func (*GlobalDecl) isDecl() {}

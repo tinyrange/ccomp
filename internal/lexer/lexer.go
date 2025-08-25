@@ -70,6 +70,10 @@ func (l *Lexer) Next() Token {
         tok.Type, tok.Lex = LBRACE, string(ch); l.read()
     case '}':
         tok.Type, tok.Lex = RBRACE, string(ch); l.read()
+    case '[':
+        tok.Type, tok.Lex = LBRACK, string(ch); l.read()
+    case ']':
+        tok.Type, tok.Lex = RBRACK, string(ch); l.read()
     case ';':
         tok.Type, tok.Lex = SEMI, string(ch); l.read()
     case ',':

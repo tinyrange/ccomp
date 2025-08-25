@@ -245,6 +245,20 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
             v, err := c.buildExpr(s.Value)
             if err != nil { return err }
             c.writeVar(s.Name, c.b, v)
+        case *ast.ArrayDeclStmt:
+            // Initialize elements to 0 as separate variables name[i]
+            for i := 0; i < s.Size; i++ {
+                c.writeVar(fmt.Sprintf("%s[%d]", s.Name, i), c.b, c.iconst(0))
+            }
+        case *ast.ArrayAssignStmt:
+            // Only constant index supported for now
+            if il, ok := s.Index.(*ast.IntLit); ok {
+                v, err := c.buildExpr(s.Value)
+                if err != nil { return err }
+                c.writeVar(fmt.Sprintf("%s[%d]", s.Name, int(il.Value)), c.b, v)
+            } else {
+                return fmt.Errorf("non-const array index not supported")
+            }
         case *ast.IfStmt:
             if err := c.buildIf(s); err != nil { return err }
         case *ast.WhileStmt:
@@ -341,6 +355,14 @@ func (c *buildCtx) buildExpr(e ast.Expr) (ValueID, error) {
         // patch the last inserted instruction's Sym
         c.b.Instrs[len(c.b.Instrs)-1].Val.Sym = e.Name
         return id, nil
+    case *ast.IndexExpr:
+        // Only ident base and constant index supported for now, read as a scalar
+        if b, ok := e.Base.(*ast.Ident); ok {
+            if il, ok := e.Index.(*ast.IntLit); ok {
+                return c.readVar(fmt.Sprintf("%s[%d]", b.Name, int(il.Value)), c.b)
+            }
+        }
+        return 0, fmt.Errorf("unsupported index expression")
     case *ast.UnaryExpr:
         switch e.Op {
         case ast.OpAddr:

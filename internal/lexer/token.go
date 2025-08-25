@@ -29,8 +29,10 @@ const (
 	LPAREN // (
 	RPAREN // )
 	LBRACE // {
-	RBRACE // }
-	SEMI   // ;
+    RBRACE // }
+    LBRACK // [
+    RBRACK // ]
+    SEMI   // ;
     COMMA  // ,
     COLON  // :
     ASSIGN // =
