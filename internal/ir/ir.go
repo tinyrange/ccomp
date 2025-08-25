@@ -74,6 +74,7 @@ const (
     OpCall // function call; Sym=callee, Args[] = arg value ids
     OpAddr // address-of local SSA slot; Args[0]=value id whose slot address to take
     OpGlobalAddr // address of global; Sym=name
+    OpSlotAddr // address of a frame slot for SSA id; no materialize
 )
 
 type Instr struct {
@@ -128,11 +129,13 @@ type buildCtx struct {
     breakTargets []*BasicBlock
     contTargets  []*BasicBlock
     m *Module
+    arrays map[string]struct{ base ValueID; size int }
 }
 
 func (c *buildCtx) initParams() {
     c.curDef = map[*BasicBlock]map[string]ValueID{}
     c.pending = map[*BasicBlock]map[string]ValueID{}
+    c.arrays = map[string]struct{ base ValueID; size int }{}
     c.curDef[c.b] = map[string]ValueID{}
     for _, name := range c.f.Params {
         id := c.newValue(OpParam, nil, 0)
@@ -246,19 +249,26 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
             if err != nil { return err }
             c.writeVar(s.Name, c.b, v)
         case *ast.ArrayDeclStmt:
-            // Initialize elements to 0 as separate variables name[i]
+            // Reserve contiguous stack slots by creating 'size' SSA values
+            var base ValueID = -1
             for i := 0; i < s.Size; i++ {
-                c.writeVar(fmt.Sprintf("%s[%d]", s.Name, i), c.b, c.iconst(0))
+                id := c.iconst(0)
+                if i == 0 { base = id }
             }
+            c.arrays[s.Name] = struct{ base ValueID; size int }{base: base, size: s.Size}
         case *ast.ArrayAssignStmt:
-            // Only constant index supported for now
-            if il, ok := s.Index.(*ast.IntLit); ok {
-                v, err := c.buildExpr(s.Value)
-                if err != nil { return err }
-                c.writeVar(fmt.Sprintf("%s[%d]", s.Name, int(il.Value)), c.b, v)
-            } else {
-                return fmt.Errorf("non-const array index not supported")
-            }
+            // Compute address base + index*8 and store value
+            arr, ok := c.arrays[s.Name]
+            if !ok { return fmt.Errorf("unknown array %s", s.Name) }
+            basePtr := c.add(OpSlotAddr, arr.base)
+            idxVal, err := c.buildExpr(s.Index)
+            if err != nil { return err }
+            scale := c.iconst(8)
+            off := c.add(OpMul, idxVal, scale)
+            ptr := c.add(OpAdd, basePtr, off)
+            val, err := c.buildExpr(s.Value)
+            if err != nil { return err }
+            c.add(OpStore, ptr, val)
         case *ast.IfStmt:
             if err := c.buildIf(s); err != nil { return err }
         case *ast.WhileStmt:
@@ -356,11 +366,17 @@ func (c *buildCtx) buildExpr(e ast.Expr) (ValueID, error) {
         c.b.Instrs[len(c.b.Instrs)-1].Val.Sym = e.Name
         return id, nil
     case *ast.IndexExpr:
-        // Only ident base and constant index supported for now, read as a scalar
         if b, ok := e.Base.(*ast.Ident); ok {
-            if il, ok := e.Index.(*ast.IntLit); ok {
-                return c.readVar(fmt.Sprintf("%s[%d]", b.Name, int(il.Value)), c.b)
-            }
+            // arr read via load
+            arr, ok := c.arrays[b.Name]
+            if !ok { return 0, fmt.Errorf("unknown array %s", b.Name) }
+            basePtr := c.add(OpSlotAddr, arr.base)
+            idxVal, err := c.buildExpr(e.Index)
+            if err != nil { return 0, err }
+            scale := c.iconst(8)
+            off := c.add(OpMul, idxVal, scale)
+            ptr := c.add(OpAdd, basePtr, off)
+            return c.add(OpLoad, ptr), nil
         }
         return 0, fmt.Errorf("unsupported index expression")
     case *ast.UnaryExpr:
