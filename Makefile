@@ -8,7 +8,7 @@ build:
 	GOCACHE=$(GOCACHE) GOMODCACHE=$(GOMODCACHE) go build -o ccomp ./cmd/ccomp
 
 run: build
-	GOCACHE=$(GOCACHE) GOMODCACHE=$(GOMODCACHE) ./ccomp examples/phase1/ret_expr.c -o out.s
+	GOCACHE=$(GOCACHE) GOMODCACHE=$(GOMODCACHE) ./ccomp -o out.s examples/phase1/ret_expr.c
 	@echo "wrote out.s"
 
 e2e: run

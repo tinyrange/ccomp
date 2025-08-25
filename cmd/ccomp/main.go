@@ -1,7 +1,6 @@
 package main
 
 import (
-    "flag"
     "fmt"
     "io/ioutil"
     "os"
@@ -13,14 +12,26 @@ import (
 )
 
 func main() {
-    out := flag.String("o", "", "output file (defaults to stdout)")
-    flag.Parse()
-
-    if flag.NArg() < 1 {
-        fmt.Fprintln(os.Stderr, "usage: ccomp <file.c> [-o out.s]")
+    var outPath string
+    var srcPath string
+    // Minimal arg parsing supporting -o anywhere
+    args := os.Args[1:]
+    for i := 0; i < len(args); i++ {
+        a := args[i]
+        if a == "-o" && i+1 < len(args) {
+            outPath = args[i+1]
+            i++
+            continue
+        }
+        if len(srcPath) == 0 && len(a) > 0 && a[0] != '-' {
+            srcPath = a
+            continue
+        }
+    }
+    if srcPath == "" {
+        fmt.Fprintln(os.Stderr, "usage: ccomp [-o out.s] <file.c>")
         os.Exit(2)
     }
-    srcPath := flag.Arg(0)
     data, err := ioutil.ReadFile(srcPath)
     if err != nil {
         fmt.Fprintf(os.Stderr, "read error: %v\n", err)
@@ -39,19 +50,21 @@ func main() {
         os.Exit(1)
     }
 
+    // Phase 2: basic optimizations
+    ir.Optimize(m)
+
     asm, err := x86_64.EmitModule(m)
     if err != nil {
         fmt.Fprintf(os.Stderr, "codegen error: %v\n", err)
         os.Exit(1)
     }
 
-    if *out == "" {
+    if outPath == "" {
         fmt.Print(asm)
         return
     }
-    if err := os.WriteFile(*out, []byte(asm), 0644); err != nil {
+    if err := os.WriteFile(outPath, []byte(asm), 0644); err != nil {
         fmt.Fprintf(os.Stderr, "write error: %v\n", err)
         os.Exit(1)
     }
 }
-
