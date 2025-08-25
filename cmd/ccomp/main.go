@@ -52,6 +52,8 @@ func main() {
 
     // Phase 2: basic optimizations
     ir.Optimize(m)
+    // SSA destruction groundwork: phi elimination (CFG-aware, no-op if no branches)
+    for _, f := range m.Funcs { ir.PhiEliminate(f) }
 
     asm, err := x86_64.EmitModule(m)
     if err != nil {

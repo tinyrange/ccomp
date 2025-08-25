@@ -80,6 +80,31 @@ func emitFunc(b *strings.Builder, f *ir.Function) error {
                     fmt.Fprintf(b, "  mov $%d, %%rax\n", ins.Val.Const)
                     fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", off)
                 }
+            case ir.OpCopy:
+                src := ins.Val.Args[0]
+                if dr, okd := alloc.regOf[ins.Res]; okd {
+                    if sr, oks := alloc.regOf[src]; oks {
+                        fmt.Fprintf(b, "  mov %s, %s\n", sr, dr)
+                    } else if cst, isC := isConst(bb, src); isC {
+                        fmt.Fprintf(b, "  mov $%d, %s\n", cst, dr)
+                    } else {
+                        offS := slotOffset(src, frameSize)
+                        fmt.Fprintf(b, "  mov %d(%%rbp), %s\n", offS, dr)
+                    }
+                } else {
+                    offD := slotOffset(ins.Res, frameSize)
+                    if sr, oks := alloc.regOf[src]; oks {
+                        fmt.Fprintf(b, "  mov %s, %%rax\n", sr)
+                        fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", offD)
+                    } else if cst, isC := isConst(bb, src); isC {
+                        fmt.Fprintf(b, "  mov $%d, %%rax\n", cst)
+                        fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", offD)
+                    } else {
+                        offS := slotOffset(src, frameSize)
+                        fmt.Fprintf(b, "  mov %d(%%rbp), %%rax\n", offS)
+                        fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", offD)
+                    }
+                }
             case ir.OpAdd, ir.OpSub, ir.OpMul:
                 emitArith(b, alloc, bb, frameSize, ins)
             case ir.OpDiv:
@@ -127,6 +152,23 @@ func emitFunc(b *strings.Builder, f *ir.Function) error {
                 }
                 b.WriteString("  pop %rbp\n")
                 b.WriteString("  ret\n")
+            case ir.OpJmp:
+                t := int(ins.Val.Args[0])
+                if t >= 0 && t < len(f.Blocks) {
+                    fmt.Fprintf(b, "  jmp %s\n", f.Blocks[t].Name)
+                }
+            case ir.OpJnz:
+                cond := ins.Val.Args[0]
+                if r, ok := alloc.regOf[cond]; ok {
+                    fmt.Fprintf(b, "  test %s, %s\n", r, r)
+                } else {
+                    off := slotOffset(cond, frameSize)
+                    fmt.Fprintf(b, "  cmp $0, %d(%%rbp)\n", off)
+                }
+                ti := int(ins.Val.Args[1])
+                fi := int(ins.Val.Args[2])
+                if ti >= 0 && ti < len(f.Blocks) { fmt.Fprintf(b, "  jne %s\n", f.Blocks[ti].Name) }
+                if fi >= 0 && fi < len(f.Blocks) { fmt.Fprintf(b, "  jmp %s\n", f.Blocks[fi].Name) }
             default:
                 // ignore
             }

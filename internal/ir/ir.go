@@ -23,6 +23,8 @@ type BasicBlock struct {
     Name string
     Instrs []Instr
     sealed bool // placeholder for Braun's algorithm
+    Preds []*BasicBlock
+    Succs []*BasicBlock
 }
 
 type ValueID int
@@ -45,6 +47,10 @@ const (
     OpStore
     OpLoad
     OpParam
+    OpCopy // used during SSA destruction / phi elimination
+    OpPhi  // phi nodes at start of a block; args aligned with Preds
+    OpJmp  // unconditional jump; Args[0] holds target block index
+    OpJnz  // conditional jump; Args[0]=cond, Args[1]=true blk idx, Args[2]=false blk idx
 )
 
 type Instr struct {
@@ -57,6 +63,11 @@ func (f *Function) newBlock(name string) *BasicBlock {
     f.Blocks = append(f.Blocks, b)
     if f.entry == nil { f.entry = b }
     return b
+}
+
+func (f *Function) addEdge(pred, succ *BasicBlock) {
+    pred.Succs = append(pred.Succs, succ)
+    succ.Preds = append(succ.Preds, pred)
 }
 
 // BuildModule creates basic SSA IR for Phase 1 (expressions, variables, return)
@@ -160,4 +171,3 @@ func (c *buildCtx) buildExpr(e ast.Expr) (ValueID, error) {
     }
     return 0, fmt.Errorf("unsupported expr")
 }
-
