@@ -29,21 +29,31 @@ const (
 	LPAREN // (
 	RPAREN // )
 	LBRACE // {
-    RBRACE // }
-    LBRACK // [
-    RBRACK // ]
-    SEMI   // ;
-    COMMA  // ,
-    COLON  // :
-    ASSIGN // =
-    AMP    // &
+	RBRACE // }
+	LBRACK // [
+	RBRACK // ]
+	SEMI   // ;
+	COMMA  // ,
+	COLON  // :
+	ASSIGN // =
+	AMP    // &
 
+	// Arithmetic
 	PLUS  // +
 	MINUS // -
-    STAR  // *
-    SLASH // /
-    ANDAND // &&
-    OROR   // ||
+	STAR  // *
+	SLASH // /
+
+	// Shifts
+	SHL // <<
+	SHR // >>
+
+	// Bitwise/logical
+	ANDAND // &&
+	OROR   // ||
+	PIPE   // |
+	CARET  // ^
+	TILDE  // ~
 
 	// Comparison
 	EQEQ // ==

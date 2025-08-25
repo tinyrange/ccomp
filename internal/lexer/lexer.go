@@ -83,7 +83,7 @@ func (l *Lexer) Next() Token {
     case '&':
         if l.peek() == '&' { l.read(); tok.Type, tok.Lex = ANDAND, "&&"; l.read() } else { tok.Type, tok.Lex = AMP, string(ch); l.read() }
     case '|':
-        if l.peek() == '|' { l.read(); tok.Type, tok.Lex = OROR, "||"; l.read() } else { tok.Type, tok.Lex = ILLEGAL, string(ch); l.read() }
+        if l.peek() == '|' { l.read(); tok.Type, tok.Lex = OROR, "||"; l.read() } else { tok.Type, tok.Lex = PIPE, string(ch); l.read() }
     case '=':
         if l.peek() == '=' { l.read(); tok.Type, tok.Lex = EQEQ, "=="; l.read() } else { tok.Type, tok.Lex = ASSIGN, string(ch); l.read() }
     case '+':
@@ -97,9 +97,13 @@ func (l *Lexer) Next() Token {
     case '!':
         if l.peek() == '=' { l.read(); tok.Type, tok.Lex = NEQ, "!="; l.read() } else { tok.Type, tok.Lex = ILLEGAL, string(ch); l.read() }
     case '<':
-        if l.peek() == '=' { l.read(); tok.Type, tok.Lex = LE, "<="; l.read() } else { tok.Type, tok.Lex = LT, "<"; l.read() }
+        if l.peek() == '<' { l.read(); tok.Type, tok.Lex = SHL, "<<"; l.read() } else if l.peek() == '=' { l.read(); tok.Type, tok.Lex = LE, "<="; l.read() } else { tok.Type, tok.Lex = LT, "<"; l.read() }
     case '>':
-        if l.peek() == '=' { l.read(); tok.Type, tok.Lex = GE, ">="; l.read() } else { tok.Type, tok.Lex = GT, ">"; l.read() }
+        if l.peek() == '>' { l.read(); tok.Type, tok.Lex = SHR, ">>"; l.read() } else if l.peek() == '=' { l.read(); tok.Type, tok.Lex = GE, ">="; l.read() } else { tok.Type, tok.Lex = GT, ">"; l.read() }
+    case '^':
+        tok.Type, tok.Lex = CARET, string(ch); l.read()
+    case '~':
+        tok.Type, tok.Lex = TILDE, string(ch); l.read()
     default:
         if unicode.IsLetter(ch) || ch == '_' {
             startLine, startCol := l.line, l.col

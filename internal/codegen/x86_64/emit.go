@@ -114,6 +114,10 @@ func emitFunc(b *strings.Builder, f *ir.Function) error {
                 }
             case ir.OpAdd, ir.OpSub, ir.OpMul:
                 emitArith(b, alloc, bb, frameSize, ins)
+            case ir.OpAnd, ir.OpOr, ir.OpXor:
+                emitBitwise(b, alloc, bb, frameSize, ins)
+            case ir.OpShl, ir.OpShr:
+                emitShift(b, alloc, bb, frameSize, ins)
             case ir.OpDiv:
                 // signed division rdx:rax / rcx -> rax (special path)
                 lhs := ins.Val.Args[0]
@@ -424,6 +428,108 @@ func emitArith(b *strings.Builder, alloc allocation, bb *ir.BasicBlock, frameSiz
             fmt.Fprintf(b, "  sub %d(%%rbp), %%rax\n", offR)
         case ir.OpMul:
             fmt.Fprintf(b, "  imul %d(%%rbp), %%rax\n", offR)
+        }
+    }
+    fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", offDest)
+}
+
+func emitBitwise(b *strings.Builder, alloc allocation, bb *ir.BasicBlock, frameSize int, ins ir.Instr) {
+    destReg, hasDestReg := alloc.regOf[ins.Res]
+    lhs := ins.Val.Args[0]
+    rhs := ins.Val.Args[1]
+    opInstr := map[ir.Op]string{ir.OpAnd: "and", ir.OpOr: "or", ir.OpXor: "xor"}[ins.Val.Op]
+    if hasDestReg {
+        if lr, ok := alloc.regOf[lhs]; ok {
+            if lr != destReg { fmt.Fprintf(b, "  mov %s, %s\n", lr, destReg) }
+        } else {
+            offL := slotOffset(lhs, frameSize)
+            fmt.Fprintf(b, "  mov %d(%%rbp), %s\n", offL, destReg)
+        }
+        if cst, isC := isConst(bb, rhs); isC {
+            fmt.Fprintf(b, "  %s $%d, %s\n", opInstr, cst, destReg)
+        } else if rr, ok := alloc.regOf[rhs]; ok {
+            fmt.Fprintf(b, "  %s %s, %s\n", opInstr, rr, destReg)
+        } else {
+            offR := slotOffset(rhs, frameSize)
+            fmt.Fprintf(b, "  %s %d(%%rbp), %s\n", opInstr, offR, destReg)
+        }
+        return
+    }
+    offDest := slotOffset(ins.Res, frameSize)
+    if lr, ok := alloc.regOf[lhs]; ok {
+        fmt.Fprintf(b, "  mov %s, %%rax\n", lr)
+    } else {
+        offL := slotOffset(lhs, frameSize)
+        fmt.Fprintf(b, "  mov %d(%%rbp), %%rax\n", offL)
+    }
+    if cst, isC := isConst(bb, rhs); isC {
+        fmt.Fprintf(b, "  %s $%d, %%rax\n", opInstr, cst)
+    } else if rr, ok := alloc.regOf[rhs]; ok {
+        fmt.Fprintf(b, "  %s %s, %%rax\n", opInstr, rr)
+    } else {
+        offR := slotOffset(rhs, frameSize)
+        fmt.Fprintf(b, "  %s %d(%%rbp), %%rax\n", opInstr, offR)
+    }
+    fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", offDest)
+}
+
+func emitShift(b *strings.Builder, alloc allocation, bb *ir.BasicBlock, frameSize int, ins ir.Instr) {
+    destReg, hasDestReg := alloc.regOf[ins.Res]
+    lhs := ins.Val.Args[0]
+    rhs := ins.Val.Args[1]
+    if hasDestReg {
+        if lr, ok := alloc.regOf[lhs]; ok {
+            if lr != destReg { fmt.Fprintf(b, "  mov %s, %s\n", lr, destReg) }
+        } else {
+            offL := slotOffset(lhs, frameSize)
+            fmt.Fprintf(b, "  mov %d(%%rbp), %s\n", offL, destReg)
+        }
+        if cst, isC := isConst(bb, rhs); isC {
+            if ins.Val.Op == ir.OpShl {
+                fmt.Fprintf(b, "  shl $%d, %s\n", cst, destReg)
+            } else {
+                fmt.Fprintf(b, "  sar $%d, %s\n", cst, destReg)
+            }
+        } else {
+            // load count into cl
+            if rr, ok := alloc.regOf[rhs]; ok {
+                fmt.Fprintf(b, "  mov %s, %%rcx\n", rr)
+            } else {
+                offR := slotOffset(rhs, frameSize)
+                fmt.Fprintf(b, "  mov %d(%%rbp), %%rcx\n", offR)
+            }
+            if ins.Val.Op == ir.OpShl {
+                b.WriteString("  shl %cl, " + destReg + "\n")
+            } else {
+                b.WriteString("  sar %cl, " + destReg + "\n")
+            }
+        }
+        return
+    }
+    offDest := slotOffset(ins.Res, frameSize)
+    if lr, ok := alloc.regOf[lhs]; ok {
+        fmt.Fprintf(b, "  mov %s, %%rax\n", lr)
+    } else {
+        offL := slotOffset(lhs, frameSize)
+        fmt.Fprintf(b, "  mov %d(%%rbp), %%rax\n", offL)
+    }
+    if cst, isC := isConst(bb, rhs); isC {
+        if ins.Val.Op == ir.OpShl {
+            fmt.Fprintf(b, "  shl $%d, %%rax\n", cst)
+        } else {
+            fmt.Fprintf(b, "  sar $%d, %%rax\n", cst)
+        }
+    } else {
+        if rr, ok := alloc.regOf[rhs]; ok {
+            fmt.Fprintf(b, "  mov %s, %%rcx\n", rr)
+        } else {
+            offR := slotOffset(rhs, frameSize)
+            fmt.Fprintf(b, "  mov %d(%%rbp), %%rcx\n", offR)
+        }
+        if ins.Val.Op == ir.OpShl {
+            b.WriteString("  shl %cl, %rax\n")
+        } else {
+            b.WriteString("  sar %cl, %rax\n")
         }
     }
     fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", offDest)

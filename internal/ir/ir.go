@@ -67,6 +67,12 @@ const (
     OpStore
     OpLoad
     OpParam
+    OpAnd
+    OpOr
+    OpXor
+    OpShl
+    OpShr
+    OpNot
     OpCopy // used during SSA destruction / phi elimination
     OpPhi  // phi nodes at start of a block; args aligned with Preds
     OpJmp  // unconditional jump; Args[0] holds target block index
@@ -347,6 +353,16 @@ func (c *buildCtx) buildExpr(e ast.Expr) (ValueID, error) {
             return c.add(OpGt, l, r), nil
         case ast.OpGe:
             return c.add(OpGe, l, r), nil
+        case ast.OpAnd:
+            return c.add(OpAnd, l, r), nil
+        case ast.OpOr:
+            return c.add(OpOr, l, r), nil
+        case ast.OpXor:
+            return c.add(OpXor, l, r), nil
+        case ast.OpShl:
+            return c.add(OpShl, l, r), nil
+        case ast.OpShr:
+            return c.add(OpShr, l, r), nil
         case ast.OpLAnd:
             return c.buildLogical(true, e.Left, e.Right)
         case ast.OpLOr:
@@ -392,6 +408,14 @@ func (c *buildCtx) buildExpr(e ast.Expr) (ValueID, error) {
             ptr, err := c.buildExpr(e.X)
             if err != nil { return 0, err }
             return c.add(OpLoad, ptr), nil
+        case ast.OpNeg:
+            x, err := c.buildExpr(e.X)
+            if err != nil { return 0, err }
+            return c.add(OpSub, c.iconst(0), x), nil
+        case ast.OpBitNot:
+            x, err := c.buildExpr(e.X)
+            if err != nil { return 0, err }
+            return c.add(OpNot, x), nil
         }
     }
     return 0, fmt.Errorf("unsupported expr")

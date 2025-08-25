@@ -110,6 +110,11 @@ const (
     OpGe
     OpLAnd
     OpLOr
+    OpAnd
+    OpOr
+    OpXor
+    OpShl
+    OpShr
 )
 
 type CallExpr struct {
@@ -122,6 +127,8 @@ type UnOp int
 const (
     OpAddr UnOp = iota
     OpDeref
+    OpNeg
+    OpBitNot
 )
 
 type UnaryExpr struct { Op UnOp; X Expr }

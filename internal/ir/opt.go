@@ -31,7 +31,7 @@ func constFoldFunc(f *Function) {
     for _, b := range f.Blocks {
         for i, ins := range b.Instrs {
             switch ins.Val.Op {
-            case OpAdd, OpSub, OpMul, OpDiv:
+            case OpAdd, OpSub, OpMul, OpDiv, OpAnd, OpOr, OpXor, OpShl, OpShr:
                 if len(ins.Val.Args) != 2 { continue }
                 a := findConst(b, ins.Val.Args[0])
                 c := findConst(b, ins.Val.Args[1])
@@ -44,6 +44,11 @@ func constFoldFunc(f *Function) {
                 case OpDiv:
                     if *c == 0 { continue }
                     k = *a / *c
+                case OpAnd: k = *a & *c
+                case OpOr:  k = *a | *c
+                case OpXor: k = *a ^ *c
+                case OpShl: k = *a << uint64(*c)
+                case OpShr: k = *a >> uint64(*c)
                 }
                 // Replace with const
                 b.Instrs[i].Val.Op = OpConst

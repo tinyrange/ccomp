@@ -326,11 +326,11 @@ func (p *Parser) parseLogicalOr() (ast.Expr, error) {
 }
 
 func (p *Parser) parseLogicalAnd() (ast.Expr, error) {
-    left, err := p.parseEquality()
+    left, err := p.parseBitwiseOr()
     if err != nil { return nil, err }
     for p.tok.Type == lexer.ANDAND {
         p.next()
-        right, err := p.parseEquality()
+        right, err := p.parseBitwiseOr()
         if err != nil { return nil, err }
         left = &ast.BinaryExpr{Op: ast.OpLAnd, Left: left, Right: right}
     }
@@ -419,15 +419,27 @@ func (p *Parser) parseUnary() (ast.Expr, error) {
         if err != nil { return nil, err }
         return &ast.UnaryExpr{Op: ast.OpDeref, X: x}, nil
     }
+    if p.tok.Type == lexer.MINUS {
+        p.next()
+        x, err := p.parseUnary()
+        if err != nil { return nil, err }
+        return &ast.UnaryExpr{Op: ast.OpNeg, X: x}, nil
+    }
+    if p.tok.Type == lexer.TILDE {
+        p.next()
+        x, err := p.parseUnary()
+        if err != nil { return nil, err }
+        return &ast.UnaryExpr{Op: ast.OpBitNot, X: x}, nil
+    }
     return p.parseFactor()
 }
 
 func (p *Parser) parseRelational() (ast.Expr, error) {
-    left, err := p.parseTerm()
+    left, err := p.parseShift()
     if err != nil { return nil, err }
     for p.tok.Type == lexer.LT || p.tok.Type == lexer.LE || p.tok.Type == lexer.GT || p.tok.Type == lexer.GE {
         op := p.tok.Type; p.next()
-        right, err := p.parseTerm()
+        right, err := p.parseShift()
         if err != nil { return nil, err }
         left = &ast.BinaryExpr{Op: binOpFromToken(op), Left: left, Right: right}
     }
@@ -444,6 +456,54 @@ func (p *Parser) parseEquality() (ast.Expr, error) {
         left = &ast.BinaryExpr{Op: binOpFromToken(op), Left: left, Right: right}
     }
     return p.parseAdd(left)
+}
+
+func (p *Parser) parseBitwiseAnd() (ast.Expr, error) {
+    left, err := p.parseEquality()
+    if err != nil { return nil, err }
+    for p.tok.Type == lexer.AMP {
+        p.next()
+        right, err := p.parseEquality()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: ast.OpAnd, Left: left, Right: right}
+    }
+    return left, nil
+}
+
+func (p *Parser) parseBitwiseXor() (ast.Expr, error) {
+    left, err := p.parseBitwiseAnd()
+    if err != nil { return nil, err }
+    for p.tok.Type == lexer.CARET {
+        p.next()
+        right, err := p.parseBitwiseAnd()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: ast.OpXor, Left: left, Right: right}
+    }
+    return left, nil
+}
+
+func (p *Parser) parseBitwiseOr() (ast.Expr, error) {
+    left, err := p.parseBitwiseXor()
+    if err != nil { return nil, err }
+    for p.tok.Type == lexer.PIPE {
+        p.next()
+        right, err := p.parseBitwiseXor()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: ast.OpOr, Left: left, Right: right}
+    }
+    return left, nil
+}
+
+func (p *Parser) parseShift() (ast.Expr, error) {
+    left, err := p.parseTerm()
+    if err != nil { return nil, err }
+    for p.tok.Type == lexer.SHL || p.tok.Type == lexer.SHR {
+        op := p.tok.Type; p.next()
+        right, err := p.parseTerm()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: binOpFromToken(op), Left: left, Right: right}
+    }
+    return left, nil
 }
 
 // parse a simple statement used in for-init/post without trailing semicolon
@@ -499,6 +559,13 @@ func (p *Parser) parseAfterPrimary(left ast.Expr) (ast.Expr, error) {
         if err != nil { return nil, err }
         left = &ast.BinaryExpr{Op: binOpFromToken(op), Left: left, Right: right}
     }
+    // shifts
+    for p.tok.Type == lexer.SHL || p.tok.Type == lexer.SHR {
+        op := p.tok.Type; p.next()
+        right, err := p.parseTerm()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: binOpFromToken(op), Left: left, Right: right}
+    }
     // relational
     for p.tok.Type == lexer.LT || p.tok.Type == lexer.LE || p.tok.Type == lexer.GT || p.tok.Type == lexer.GE {
         op := p.tok.Type; p.next()
@@ -513,6 +580,44 @@ func (p *Parser) parseAfterPrimary(left ast.Expr) (ast.Expr, error) {
         right, err := p.parseRelational()
         if err != nil { return nil, err }
         left = &ast.BinaryExpr{Op: binOpFromToken(op), Left: left, Right: right}
+    }
+    // bitwise and/xor/or using full equality precedence on right
+    for p.tok.Type == lexer.AMP {
+        p.next()
+        right, err := p.parseEquality()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: ast.OpAnd, Left: left, Right: right}
+    }
+    for p.tok.Type == lexer.CARET {
+        p.next()
+        right, err := p.parseEquality()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: ast.OpXor, Left: left, Right: right}
+    }
+    for p.tok.Type == lexer.PIPE {
+        p.next()
+        right, err := p.parseEquality()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: ast.OpOr, Left: left, Right: right}
+    }
+    // bitwise and/xor/or
+    for p.tok.Type == lexer.AMP {
+        p.next()
+        right, err := p.parseAdd(left)
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: ast.OpAnd, Left: left, Right: right}
+    }
+    for p.tok.Type == lexer.CARET {
+        p.next()
+        right, err := p.parseAdd(left)
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: ast.OpXor, Left: left, Right: right}
+    }
+    for p.tok.Type == lexer.PIPE {
+        p.next()
+        right, err := p.parseAdd(left)
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: ast.OpOr, Left: left, Right: right}
     }
     // logical and/or
     for p.tok.Type == lexer.ANDAND {
@@ -544,6 +649,11 @@ func binOpFromToken(t lexer.TokenType) ast.BinOp {
     case lexer.GE: return ast.OpGe
     case lexer.ANDAND: return ast.OpLAnd
     case lexer.OROR: return ast.OpLOr
+    case lexer.AMP: return ast.OpAnd
+    case lexer.CARET: return ast.OpXor
+    case lexer.PIPE: return ast.OpOr
+    case lexer.SHL: return ast.OpShl
+    case lexer.SHR: return ast.OpShr
     default: return ast.OpAdd
     }
 }
