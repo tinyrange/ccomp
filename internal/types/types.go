@@ -91,6 +91,12 @@ func (t Type) IsInteger() bool {
     return t.IsSigned() || t.IsUnsigned()
 }
 
+// StructType represents a struct type (forward declaration to avoid import cycle)
+type StructType struct {
+    Name string
+    Def  interface{} // will be *ir.StructDef but we avoid the import cycle
+}
+
 // FromBasicType converts AST BasicType to internal Type
 // Note: This will need ast import - will be updated in ir.go where it's used
 func FromBasicType(bt int, isPtr bool) Type {

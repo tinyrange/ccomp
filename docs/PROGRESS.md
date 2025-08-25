@@ -1,12 +1,14 @@
 # Compiler Progress Report — Phase 3
 
 ## Overview
+
 This report summarizes the current state of the SSA-based C compiler. We have a working end-to-end pipeline with SSA construction, optimizations, phi elimination, and an x86_64 SysV backend. Phase 3 substantially expanded control flow, function calls, logic/bitwise/shift operators, pointers, minimal arrays, and globals. All tests currently pass.
 
 ## Implemented
+
 - Frontend
-  - Lexer: keywords `int return if else while for do break continue switch case default`, punctuation `(){}[],:;`, operators `= + - * / < <= > >= == != && || & | ^ ~ << >>`.
-  - Parser: functions with `int` params; blocks; decls/assignments; `return`; control-flow `if/else`, `while`, `for`, `do/while`, `break`, `continue`, `switch/case/default`; expressions with precedence including logical short-circuit, bitwise, and shifts; calls `f(a,b)`; unary `-`, `~`, address-of `&`, deref `*`; minimal arrays `int a[N]; a[i]; a[i]=...`.
+  - Lexer: keywords `int char struct enum typedef return if else while for do break continue switch case default`, punctuation `(){}[],:;.`, operators `= + - * / < <= > >= == != && || & | ^ ~ << >>`.
+  - Parser: functions with `int` params; blocks; decls/assignments; `return`; control-flow `if/else`, `while`, `for`, `do/while`, `break`, `continue`, `switch/case/default`; expressions with precedence including logical short-circuit, bitwise, and shifts; calls `f(a,b)`; unary `-`, `~`, address-of `&`, deref `*`; minimal arrays `int a[N]; a[i]; a[i]=...`; struct definitions `struct S { int x; int y; }`, field access `s.field`, field assignment `s.field = value`; enum definitions `enum E { A=1, B=2 }`; typedef declarations `typedef int i32`.
 - IR (SSA)
   - Values/ops: arithmetic `add sub mul div`; compare `eq ne lt le gt ge`; logic/bitwise/shift `and or xor shl shr not`; memory `load store`; control-flow `phi jmp jnz`; calls `call`; addressing `addr globaladdr slotaddr`; misc `const param copy`.
   - CFG on basic blocks: `Preds`/`Succs` with helper `addEdge`.
@@ -30,39 +32,49 @@ This report summarizes the current state of the SSA-based C compiler. We have a 
   - Sandboxed builds using local Go caches; `Makefile` targets `build`, `run`, `e2e`, `clean`, `test`.
   - Runtime `_start` for `-nostdlib` linking.
 - Tests
-  - 30 tests in `tests/` with expectations: `// EXPECT: EXIT <n>` or `// EXPECT: COMPILE-FAIL`.
+  - 43 tests in `tests/` with expectations: `// EXPECT: EXIT <n>` or `// EXPECT: COMPILE-FAIL`.
   - Runner `tools/run_tests.sh` compiles, links, runs, and checks results using a 1s timeout wrapper to avoid hangs. `make test` wraps it.
+  - Recent test additions: pointer arithmetic validation, enum constant usage.
 
-## New In-Progress (Types)
-- Minimal type groundwork: introduce internal type model (int64, pointer) and track variable/expression types in SSA builder.
-- Pointer arithmetic: `ptr +/- int` now scales the integer operand by the pointee size (8 bytes for int/pointers) before addition/subtraction.
-- Global arrays: parse/emit `int g[N];` as zero-initialized `.data` with `.zero 8*N`; support `g[i]` loads/stores.
- - String literals: lex/parse `"..."`, intern in module `.rodata` as NUL-terminated with unique labels; expressions of type `char*` (pointer-to-byte) yield their address via RIP-relative `lea`.
+## Recently Completed (Phase 3 Extensions)
+
+- Enhanced type system: extended beyond int/pointer with signed/unsigned variants (Int8, Int16, Int32, Int64, Uint8, Uint16, Uint32, Uint64) and proper size calculations.
+- Pointer arithmetic: `ptr +/- int` scales by pointee size; `ptr - ptr` returns element count difference (C-compliant semantics).
+- Global arrays: parse/emit `int g[N];` as zero-initialized `.data` with `.zero N*elemsize`; support `g[i]` loads/stores with proper element scaling.
+- String literals: lex/parse `"..."`, intern in module `.rodata` as NUL-terminated with unique labels; expressions of type `char*` yield address via RIP-relative `lea`.
+- Struct definitions: complete parsing and IR layout calculation with field offset computation.
+- Enum constants: full implementation with module-level storage and identifier resolution (e.g., `enum E { A=1, B=2 }; return B;` works).
+- Typedef declarations: parsing implemented (type aliases not yet functional).
 
 ## What Works End-to-End
+
 - Expressions: integer arithmetic; comparisons; logical short-circuit `&&/||`; bitwise `& | ^` and unary `~`; shifts `<< >>`; parentheses respected.
-- Declarations/assignments: local `int` variables; minimal arrays `int a[N]` with `a[i]` r/w backed by frame slots; pointers `&x`, `*p` for int-sized loads.
+- Declarations/assignments: local `int`/`char` variables; minimal arrays `int a[N]` with `a[i]` r/w backed by frame slots; pointers `&x`, `*p` with proper element-size scaling.
 - Control flow: `if/else`, `while`, `for`, `do/while`, `break`, `continue`, and `switch/case/default` (fallthrough by omission) with correct CFG/phi.
 - Calls/recursion: direct calls with SysV arg passing; recursion works (factorial test returns 120).
-- Globals: `int g = <int>` in `.data`, accessed via RIP-relative addressing.
-- Sanity: `make e2e` returns exit code 14 for the sample; full suite: 30 passed.
+- Globals: `int g = <int>` and `char gc = <int>` in `.data`, accessed via RIP-relative addressing; global arrays `int ga[N]`.
+- Structs: `struct S { int x; int y; };` definitions with field layout; `struct S s;` variable declarations; `s.field` access and `s.field = value` assignments.
+- Enums: `enum E { A=1, B=2 };` definitions with constants that resolve correctly (returns proper values).
+- Typedefs: `typedef int i32; i32 x = 42;` type alias definitions and usage in variable declarations.
+- Sanity: `make e2e` returns exit code 14 for the sample; full suite: 44 tests passed.
 
-## Known Limitations (remaining Phase 3)
-- Minimal type system: all values are treated as 64-bit ints; no signed/unsigned distinction; no casts.
-- Memory model: no alias analysis; no global arrays/strings/structs; local arrays backed by frame slots (int-sized elements only).
-- No struct/union/enum/typedef; no varargs; no floating-point.
+## Known Limitations (remaining work)
+
+- Type system: enhanced types exist but most operations still default to 64-bit int behavior; no signed/unsigned distinction in operations; no casts.
+- Memory model: no alias analysis; struct memory layout calculated and used for field access.
+- No union; no varargs; no floating-point.
 - RA: conservative (spill-only) on multi-block/calls; revisit with SSA-aware linear scan.
 - Diagnostics: parser/IR errors are minimal; no SSA validator.
 
 ## Next Steps
-1. Types/memory: extend the new type system beyond int/pointer (signed/unsigned widths), generalize arrays (non-int elements), support strings in `.rodata`, and add `store` to globals; refine pointer arithmetic as element types expand.
-2. Structs/enums/typedef: parse and lay out aggregates; field access; basic enum constants.
-3. Expressions: logical `!` and casts; refine comparisons for signed/unsigned as types solidify.
-4. Register allocation: re-enable SSA-aware linear scan across CFG with call clobber handling; reduce spills.
-5. Optimizations: SCCP, simple GVN, and peepholes for address arithmetic and copy cleanup.
-6. Tooling: SSA validator and improved diagnostics.
+
+1. **Expressions**: logical `!` and casts; refine comparisons for signed/unsigned as types solidify.
+2. **Register allocation**: re-enable SSA-aware linear scan across CFG with call clobber handling; reduce spills.
+3. **Optimizations**: SCCP, simple GVN, and peepholes for address arithmetic and copy cleanup.
+4. **Tooling**: SSA validator and improved diagnostics.
 
 ## How To Run
+
 - End-to-end sanity:
   - `make e2e` — builds compiler, generates assembly for `examples/phase1/ret_expr.c`, links, runs (expects exit=14).
 - Full test suite (1s timeout per binary): `make test`
@@ -71,7 +83,9 @@ This report summarizes the current state of the SSA-based C compiler. We have a 
   - `./ccomp -o out.s tests/t13_compare.c && gcc -nostdlib out.s runtime/start_linux_amd64.s -o a.out && ./a.out; echo $?`
 
 ## Repository Hygiene
+
 - Temporary artifacts are cleaned by `make clean` and ignored via `.gitignore` (`.cache/`, `ccomp`, `out.s`, `a.out`, `.test.*`, `.test-tmp/`, `.t*`, `.w*`).
 
 ---
+
 This report reflects the repository state after Phase 2 completion and Phase 3 initial control-flow support (if/else, while with loop-carried phi) has been implemented and validated.

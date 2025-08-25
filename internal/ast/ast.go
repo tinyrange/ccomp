@@ -31,7 +31,7 @@ func (*ReturnStmt) isStmt() {}
 type ExprStmt struct { X Expr }
 func (*ExprStmt) isStmt() {}
 
-type DeclStmt struct { Name string; Init Expr; Typ BasicType; Ptr bool; Pos Pos }
+type DeclStmt struct { Name string; Init Expr; Typ BasicType; Ptr bool; Pos Pos; TypedefName string }
 func (*DeclStmt) isStmt() {}
 
 type ArrayDeclStmt struct { Name string; Size int; Elem BasicType }

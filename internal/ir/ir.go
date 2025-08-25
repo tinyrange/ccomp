@@ -12,12 +12,33 @@ type Module struct {
     Globals []Global
     StrLits []StrLit
     EnumConstants map[string]int64
+    StructDefs map[string]*StructDef
+    Typedefs map[string]*TypedefDef
+}
+
+type TypedefDef struct {
+    Name string
+    Type ty.Type
+}
+
+type StructDef struct {
+    Name   string
+    Fields []StructField
+    Size   int // total size in bytes
+}
+
+type StructField struct {
+    Name   string
+    Type   ty.Type
+    Offset int // offset in bytes from struct start
 }
 
 func NewModule(name string) *Module { 
     return &Module{
         Name: name,
         EnumConstants: make(map[string]int64),
+        StructDefs: make(map[string]*StructDef),
+        Typedefs: make(map[string]*TypedefDef),
     }
 }
 
@@ -135,16 +156,35 @@ func BuildModule(file *ast.File, m *Module) error {
             esz := elemType.Size()
             m.Globals = append(m.Globals, Global{Name: gd.Name, Array: true, Length: gd.Size, ElemSize: esz})
         case *ast.StructDecl:
-            // For now, just register the struct definition - proper layout implementation later
-            // TODO: implement struct layout and field offset calculation
+            // Calculate struct layout and field offsets
+            var fields []StructField
+            offset := 0
+            for _, astField := range gd.Fields {
+                fieldType := ty.FromBasicType(int(astField.Typ), astField.Ptr)
+                fields = append(fields, StructField{
+                    Name:   astField.Name,
+                    Type:   fieldType,
+                    Offset: offset,
+                })
+                offset += fieldType.Size()
+            }
+            m.StructDefs[gd.Name] = &StructDef{
+                Name:   gd.Name,
+                Fields: fields,
+                Size:   offset,
+            }
         case *ast.EnumDecl:
             // Register enum constants at module level
             for _, val := range gd.Values {
                 m.EnumConstants[val.Name] = val.Value
             }
         case *ast.TypedefDecl:
-            // For now, just register the typedef - type alias implementation later
-            // TODO: implement typedef type alias handling
+            // Register the typedef
+            targetType := ty.FromBasicType(int(gd.Typ), gd.Ptr)
+            m.Typedefs[gd.Name] = &TypedefDef{
+                Name: gd.Name,
+                Type: targetType,
+            }
         }
     }
     // Then build functions
@@ -188,6 +228,8 @@ type buildCtx struct {
     strLabels map[string]string
     // enum constants
     enumConstants map[string]int64
+    // struct variables: varname -> struct type name
+    structVars map[string]string
     retType ty.Type
 }
 
@@ -198,6 +240,7 @@ func (c *buildCtx) initParams() {
     c.varTypes = map[string]ty.Type{}
     c.strLabels = map[string]string{}
     c.enumConstants = map[string]int64{}
+    c.structVars = map[string]string{}
     c.curDef[c.b] = map[string]ValueID{}
     for _, p := range c.f.Params {
         id := c.newValue(OpParam, nil, 0)
@@ -313,11 +356,28 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
                 c.varTypes[s.Name] = t
             } else {
                 c.writeVar(s.Name, c.b, c.iconst(0))
-                if s.Ptr {
-                    if s.Typ == ast.BTChar { c.varTypes[s.Name] = ty.PointerTo(ty.ByteT()) } else { c.varTypes[s.Name] = ty.PointerTo(ty.Int()) }
+                
+                // Determine variable type
+                var varType ty.Type
+                if s.TypedefName != "" {
+                    // Look up typedef
+                    if typedef, exists := c.m.Typedefs[s.TypedefName]; exists {
+                        varType = typedef.Type
+                        if s.Ptr {
+                            varType = ty.PointerTo(varType)
+                        }
+                    } else {
+                        return fmt.Errorf("unknown typedef: %s", s.TypedefName)
+                    }
                 } else {
-                    if s.Typ == ast.BTChar { c.varTypes[s.Name] = ty.ByteT() } else { c.varTypes[s.Name] = ty.Int() }
+                    // Regular type
+                    if s.Ptr {
+                        if s.Typ == ast.BTChar { varType = ty.PointerTo(ty.ByteT()) } else { varType = ty.PointerTo(ty.Int()) }
+                    } else {
+                        if s.Typ == ast.BTChar { varType = ty.ByteT() } else { varType = ty.Int() }
+                    }
                 }
+                c.varTypes[s.Name] = varType
             }
         case *ast.AssignStmt:
             // If assigning to a global (and no local of same name), emit store to global
@@ -423,14 +483,77 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
         case *ast.BlockStmt:
             if err := c.buildBlock(s); err != nil { return err }
         case *ast.StructVarDeclStmt:
-            // For now, treat struct variables as placeholder - we'll implement proper struct layout later
-            // Just allocate space for the struct (for now assume fixed size)
-            c.writeVar(s.Name, c.b, c.iconst(0))
-            // TODO: implement proper struct type tracking
+            // Allocate space for struct on stack by creating a slot address
+            if structDef, ok := c.m.StructDefs[s.StructType]; ok {
+                // Create a placeholder value to get a slot, then get its address
+                // Initialize with zero
+                structBase := c.iconst(0)
+                // Get the address of this slot - this will be our struct base address
+                structAddr := c.add(OpSlotAddr, structBase)
+                c.writeVar(s.Name, c.b, structAddr)
+                // Track which variables are structs and what type
+                c.structVars[s.Name] = s.StructType
+                // Set type information
+                c.varTypes[s.Name] = ty.PointerTo(ty.Int()) // pointer to struct (simplified)
+                _ = structDef // use variable
+            } else {
+                return fmt.Errorf("unknown struct type: %s", s.StructType)
+            }
         case *ast.FieldAssignStmt:
-            // For now, stub field assignments - proper implementation needs struct layout
-            // TODO: implement proper field offset calculation and storage
-            return fmt.Errorf("field assignments not yet implemented")
+            // Look up struct type
+            structTypeName, isStruct := c.structVars[s.Base]
+            if !isStruct {
+                return fmt.Errorf("%s is not a struct variable", s.Base)
+            }
+            
+            // Get struct definition
+            structDef, exists := c.m.StructDefs[structTypeName]
+            if !exists {
+                return fmt.Errorf("struct type %s not defined", structTypeName)
+            }
+            
+            // Find field
+            var field *StructField
+            for i := range structDef.Fields {
+                if structDef.Fields[i].Name == s.Field {
+                    field = &structDef.Fields[i]
+                    break
+                }
+            }
+            if field == nil {
+                return fmt.Errorf("field %s not found in struct %s", s.Field, structTypeName)
+            }
+            
+            // Get base struct variable
+            baseVar, err := c.readVar(s.Base, c.b)
+            if err != nil {
+                return err
+            }
+            
+            // Build value expression
+            val, _, err := c.buildExprWithType(s.Value)
+            if err != nil {
+                return err
+            }
+            
+            // Calculate field address and store
+            if field.Offset == 0 {
+                // First field, no offset needed
+                if field.Type.Size() == 1 {
+                    c.add(OpStore8, baseVar, val)
+                } else {
+                    c.add(OpStore, baseVar, val)
+                }
+            } else {
+                // Add offset
+                offsetConst := c.iconst(int64(field.Offset))
+                fieldAddr := c.add(OpAdd, baseVar, offsetConst)
+                if field.Type.Size() == 1 {
+                    c.add(OpStore8, fieldAddr, val)
+                } else {
+                    c.add(OpStore, fieldAddr, val)
+                }
+            }
         default:
             return fmt.Errorf("unsupported stmt type")
         }
@@ -614,9 +737,58 @@ func (c *buildCtx) buildExprWithType(e ast.Expr) (ValueID, ty.Type, error) {
         if sz == 1 { return c.add(OpLoad8, ptr), ty.ByteT(), nil }
         return c.add(OpLoad, ptr), ty.Int(), nil
     case *ast.FieldExpr:
-        // For now, stub field access - proper implementation needs struct layout
-        // TODO: implement proper field offset calculation and loading
-        return 0, ty.Int(), fmt.Errorf("field access not yet implemented")
+        // Get the base variable (must be a struct)
+        baseIdent, ok := e.Base.(*ast.Ident)
+        if !ok {
+            return 0, ty.Int(), fmt.Errorf("field access on non-identifier not supported")
+        }
+        
+        // Look up struct type
+        structTypeName, isStruct := c.structVars[baseIdent.Name]
+        if !isStruct {
+            return 0, ty.Int(), fmt.Errorf("%s is not a struct variable", baseIdent.Name)
+        }
+        
+        // Get struct definition
+        structDef, exists := c.m.StructDefs[structTypeName]
+        if !exists {
+            return 0, ty.Int(), fmt.Errorf("struct type %s not defined", structTypeName)
+        }
+        
+        // Find field
+        var field *StructField
+        for i := range structDef.Fields {
+            if structDef.Fields[i].Name == e.Field {
+                field = &structDef.Fields[i]
+                break
+            }
+        }
+        if field == nil {
+            return 0, ty.Int(), fmt.Errorf("field %s not found in struct %s", e.Field, structTypeName)
+        }
+        
+        // Get base struct variable
+        baseVar, err := c.readVar(baseIdent.Name, c.b)
+        if err != nil {
+            return 0, ty.Int(), err
+        }
+        
+        // Calculate field address: base + offset
+        if field.Offset == 0 {
+            // First field, no offset needed
+            if field.Type.Size() == 1 {
+                return c.add(OpLoad8, baseVar), field.Type, nil
+            }
+            return c.add(OpLoad, baseVar), field.Type, nil
+        } else {
+            // Add offset
+            offsetConst := c.iconst(int64(field.Offset))
+            fieldAddr := c.add(OpAdd, baseVar, offsetConst)
+            if field.Type.Size() == 1 {
+                return c.add(OpLoad8, fieldAddr), field.Type, nil
+            }
+            return c.add(OpLoad, fieldAddr), field.Type, nil
+        }
     case *ast.UnaryExpr:
         switch e.Op {
         case ast.OpAddr:
