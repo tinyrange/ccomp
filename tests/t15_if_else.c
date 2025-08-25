@@ -1,0 +1,3 @@
+// EXPECT: COMPILE-FAIL
+int main(){ int x=5; if (x) return 1; else return 2; }
+

@@ -1,7 +1,7 @@
 GOCACHE := $(PWD)/.cache/go-build
 GOMODCACHE := $(PWD)/.cache/gomod
 
-.PHONY: build run clean e2e
+.PHONY: build run clean e2e test
 
 build:
 	@mkdir -p $(GOCACHE) $(GOMODCACHE)
@@ -18,3 +18,6 @@ e2e: run
 clean:
 	rm -f ccomp out.s
 	rm -rf .cache
+
+test:
+	GOCACHE=$(GOCACHE) GOMODCACHE=$(GOMODCACHE) bash tools/run_tests.sh
