@@ -37,11 +37,17 @@ func (*DeclStmt) isStmt() {}
 type ArrayDeclStmt struct { Name string; Size int; Elem BasicType }
 func (*ArrayDeclStmt) isStmt() {}
 
+type StructVarDeclStmt struct { Name string; StructType string }
+func (*StructVarDeclStmt) isStmt() {}
+
 type AssignStmt struct { Name string; Value Expr; Pos Pos }
 func (*AssignStmt) isStmt() {}
 
 type ArrayAssignStmt struct { Name string; Index Expr; Value Expr }
 func (*ArrayAssignStmt) isStmt() {}
+
+type FieldAssignStmt struct { Base string; Field string; Value Expr }
+func (*FieldAssignStmt) isStmt() {}
 
 type IfStmt struct {
     Cond Expr
@@ -146,12 +152,48 @@ func (*IndexExpr) isExpr() {}
 type CastExpr struct { To BasicType; Ptr bool; X Expr }
 func (*CastExpr) isExpr() {}
 
+type FieldExpr struct { Base Expr; Field string }
+func (*FieldExpr) isExpr() {}
+
 type GlobalDecl struct { Name string; Init *IntLit; Typ BasicType; Ptr bool }
 func (*GlobalDecl) isDecl() {}
 
 // GlobalArrayDecl represents a global array like: int g[N]; (zero-initialized)
 type GlobalArrayDecl struct { Name string; Size int; Elem BasicType }
 func (*GlobalArrayDecl) isDecl() {}
+
+// StructDecl represents a struct definition: struct S { int x; int y; };
+type StructDecl struct {
+    Name   string
+    Fields []StructField
+}
+func (*StructDecl) isDecl() {}
+
+type StructField struct {
+    Name string
+    Typ  BasicType
+    Ptr  bool
+}
+
+// EnumDecl represents an enum definition: enum E { A=1, B=2 };
+type EnumDecl struct {
+    Name   string
+    Values []EnumValue
+}
+func (*EnumDecl) isDecl() {}
+
+type EnumValue struct {
+    Name  string
+    Value int64
+}
+
+// TypedefDecl represents a typedef: typedef int i32;
+type TypedefDecl struct {
+    Name string
+    Typ  BasicType
+    Ptr  bool
+}
+func (*TypedefDecl) isDecl() {}
 
 type BasicType int
 const (

@@ -16,6 +16,9 @@ const (
 	// Keywords
 	KW_INT
 	KW_CHAR
+	KW_STRUCT
+	KW_ENUM
+	KW_TYPEDEF
 	KW_RETURN
 	KW_IF
 	KW_ELSE
@@ -38,6 +41,7 @@ const (
 	SEMI   // ;
 	COMMA  // ,
 	COLON  // :
+	DOT    // .
 	ASSIGN // =
 	AMP    // &
 

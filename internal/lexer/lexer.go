@@ -80,6 +80,8 @@ func (l *Lexer) Next() Token {
         tok.Type, tok.Lex = COMMA, string(ch); l.read()
     case ':':
         tok.Type, tok.Lex = COLON, string(ch); l.read()
+    case '.':
+        tok.Type, tok.Lex = DOT, string(ch); l.read()
     case '&':
         if l.peek() == '&' { l.read(); tok.Type, tok.Lex = ANDAND, "&&"; l.read() } else { tok.Type, tok.Lex = AMP, string(ch); l.read() }
     case '|':
@@ -170,6 +172,9 @@ func (l *Lexer) Next() Token {
             switch lex {
             case "int": tok.Type = KW_INT
             case "char": tok.Type = KW_CHAR
+            case "struct": tok.Type = KW_STRUCT
+            case "enum": tok.Type = KW_ENUM
+            case "typedef": tok.Type = KW_TYPEDEF
             case "return": tok.Type = KW_RETURN
             case "if": tok.Type = KW_IF
             case "else": tok.Type = KW_ELSE

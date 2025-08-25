@@ -11,9 +11,15 @@ type Module struct {
     Funcs []*Function
     Globals []Global
     StrLits []StrLit
+    EnumConstants map[string]int64
 }
 
-func NewModule(name string) *Module { return &Module{Name: name} }
+func NewModule(name string) *Module { 
+    return &Module{
+        Name: name,
+        EnumConstants: make(map[string]int64),
+    }
+}
 
 type Global struct {
     Name string
@@ -128,6 +134,17 @@ func BuildModule(file *ast.File, m *Module) error {
             elemType := ty.FromBasicType(int(gd.Elem), false)
             esz := elemType.Size()
             m.Globals = append(m.Globals, Global{Name: gd.Name, Array: true, Length: gd.Size, ElemSize: esz})
+        case *ast.StructDecl:
+            // For now, just register the struct definition - proper layout implementation later
+            // TODO: implement struct layout and field offset calculation
+        case *ast.EnumDecl:
+            // Register enum constants at module level
+            for _, val := range gd.Values {
+                m.EnumConstants[val.Name] = val.Value
+            }
+        case *ast.TypedefDecl:
+            // For now, just register the typedef - type alias implementation later
+            // TODO: implement typedef type alias handling
         }
     }
     // Then build functions
@@ -169,6 +186,8 @@ type buildCtx struct {
     varTypes map[string]ty.Type
     // interned string literal labels
     strLabels map[string]string
+    // enum constants
+    enumConstants map[string]int64
     retType ty.Type
 }
 
@@ -178,6 +197,7 @@ func (c *buildCtx) initParams() {
     c.arrays = map[string]struct{ base ValueID; size int; elemSize int }{}
     c.varTypes = map[string]ty.Type{}
     c.strLabels = map[string]string{}
+    c.enumConstants = map[string]int64{}
     c.curDef[c.b] = map[string]ValueID{}
     for _, p := range c.f.Params {
         id := c.newValue(OpParam, nil, 0)
@@ -402,6 +422,15 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
             if _, _, err := c.buildExprWithType(s.X); err != nil { return err }
         case *ast.BlockStmt:
             if err := c.buildBlock(s); err != nil { return err }
+        case *ast.StructVarDeclStmt:
+            // For now, treat struct variables as placeholder - we'll implement proper struct layout later
+            // Just allocate space for the struct (for now assume fixed size)
+            c.writeVar(s.Name, c.b, c.iconst(0))
+            // TODO: implement proper struct type tracking
+        case *ast.FieldAssignStmt:
+            // For now, stub field assignments - proper implementation needs struct layout
+            // TODO: implement proper field offset calculation and storage
+            return fmt.Errorf("field assignments not yet implemented")
         default:
             return fmt.Errorf("unsupported stmt type")
         }
@@ -443,6 +472,10 @@ func (c *buildCtx) buildExprWithType(e ast.Expr) (ValueID, ty.Type, error) {
                     if g.ElemSize == 1 { return c.add(OpLoad8, addr), ty.Int(), nil }
                     return c.add(OpLoad, addr), ty.Int(), nil
                 }
+            }
+            // check enum constants
+            if val, ok := c.m.EnumConstants[e.Name]; ok {
+                return c.iconst(val), ty.Int(), nil
             }
         }
         return 0, ty.Int(), fmt.Errorf("undefined variable %s", e.Name)
@@ -580,6 +613,10 @@ func (c *buildCtx) buildExprWithType(e ast.Expr) (ValueID, ty.Type, error) {
         ptr := c.add(OpAdd, base, off)
         if sz == 1 { return c.add(OpLoad8, ptr), ty.ByteT(), nil }
         return c.add(OpLoad, ptr), ty.Int(), nil
+    case *ast.FieldExpr:
+        // For now, stub field access - proper implementation needs struct layout
+        // TODO: implement proper field offset calculation and loading
+        return 0, ty.Int(), fmt.Errorf("field access not yet implemented")
     case *ast.UnaryExpr:
         switch e.Op {
         case ast.OpAddr:

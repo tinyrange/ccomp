@@ -37,6 +37,16 @@ func (p *Parser) expect(tt lexer.TokenType) (lexer.Token, error) {
 }
 
 func (p *Parser) parseDecl() (ast.Decl, error) {
+    // Handle struct, enum, typedef declarations first
+    switch p.tok.Type {
+    case lexer.KW_STRUCT:
+        return p.parseStructDecl()
+    case lexer.KW_ENUM:
+        return p.parseEnumDecl()
+    case lexer.KW_TYPEDEF:
+        return p.parseTypedefDecl()
+    }
+    
     // Either: <type> IDENT(params) { ... }  OR  <type> [*]* IDENT [= INT] ;  (global)
     // We currently support int and char
     basict := ast.BTInt
@@ -126,6 +136,15 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
         if err != nil { return nil, err }
         if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
         return &ast.ReturnStmt{Expr: e, Pos: ast.Pos{Line: posTok.Line, Col: posTok.Col}}, nil
+    case lexer.KW_STRUCT:
+        // struct variable declaration: struct S s;
+        p.next()
+        structNameTok, err := p.expect(lexer.IDENT)
+        if err != nil { return nil, err }
+        varNameTok, err := p.expect(lexer.IDENT)
+        if err != nil { return nil, err }
+        if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
+        return &ast.StructVarDeclStmt{Name: varNameTok.Lex, StructType: structNameTok.Lex}, nil
     case lexer.KW_INT, lexer.KW_CHAR:
         // declaration: T x; | T x = expr; | T a[N];
         bt := ast.BTInt
@@ -292,6 +311,17 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
         // Try lookahead '='
         id := p.tok
         p.next()
+        if p.tok.Type == lexer.DOT {
+            // field assignment: s.field = value
+            p.next()
+            fieldTok, err := p.expect(lexer.IDENT)
+            if err != nil { return nil, err }
+            if _, err := p.expect(lexer.ASSIGN); err != nil { return nil, err }
+            val, err := p.parseExpr()
+            if err != nil { return nil, err }
+            if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
+            return &ast.FieldAssignStmt{Base: id.Lex, Field: fieldTok.Lex, Value: val}, nil
+        }
         if p.tok.Type == lexer.LBRACK {
             // array element assignment
             p.next()
@@ -410,6 +440,13 @@ func (p *Parser) parseFactor() (ast.Expr, error) {
             if err != nil { return nil, err }
             if _, err := p.expect(lexer.RBRACK); err != nil { return nil, err }
             expr = &ast.IndexExpr{Base: expr, Index: idx}
+        }
+        // support field access
+        for p.tok.Type == lexer.DOT {
+            p.next()
+            fieldTok, err := p.expect(lexer.IDENT)
+            if err != nil { return nil, err }
+            expr = &ast.FieldExpr{Base: expr, Field: fieldTok.Lex}
         }
         return expr, nil
     case lexer.INT:
@@ -721,4 +758,116 @@ func binOpFromToken(t lexer.TokenType) ast.BinOp {
     case lexer.SHR: return ast.OpShr
     default: return ast.OpAdd
     }
+}
+
+func (p *Parser) parseStructDecl() (ast.Decl, error) {
+    // struct IDENT { field1; field2; ... };
+    if _, err := p.expect(lexer.KW_STRUCT); err != nil { return nil, err }
+    
+    nameTok, err := p.expect(lexer.IDENT)
+    if err != nil { return nil, err }
+    
+    if _, err := p.expect(lexer.LBRACE); err != nil { return nil, err }
+    
+    var fields []ast.StructField
+    for p.tok.Type != lexer.RBRACE {
+        // Parse field: <type> [*]* name;
+        var fieldType ast.BasicType
+        if p.tok.Type == lexer.KW_INT {
+            fieldType = ast.BTInt
+        } else if p.tok.Type == lexer.KW_CHAR {
+            fieldType = ast.BTChar
+        } else {
+            return nil, fmt.Errorf("only int/char field types supported at %d:%d", p.tok.Line, p.tok.Col)
+        }
+        p.next()
+        
+        // optional pointer stars
+        ptr := false
+        for p.tok.Type == lexer.STAR { p.next(); ptr = true }
+        
+        fieldNameTok, err := p.expect(lexer.IDENT)
+        if err != nil { return nil, err }
+        
+        if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
+        
+        fields = append(fields, ast.StructField{
+            Name: fieldNameTok.Lex,
+            Typ:  fieldType,
+            Ptr:  ptr,
+        })
+    }
+    
+    if _, err := p.expect(lexer.RBRACE); err != nil { return nil, err }
+    if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
+    
+    return &ast.StructDecl{Name: nameTok.Lex, Fields: fields}, nil
+}
+
+func (p *Parser) parseEnumDecl() (ast.Decl, error) {
+    // enum IDENT { A=1, B=2 };
+    if _, err := p.expect(lexer.KW_ENUM); err != nil { return nil, err }
+    
+    nameTok, err := p.expect(lexer.IDENT)
+    if err != nil { return nil, err }
+    
+    if _, err := p.expect(lexer.LBRACE); err != nil { return nil, err }
+    
+    var values []ast.EnumValue
+    for p.tok.Type != lexer.RBRACE {
+        enumNameTok, err := p.expect(lexer.IDENT)
+        if err != nil { return nil, err }
+        
+        // expect =value
+        if _, err := p.expect(lexer.ASSIGN); err != nil { return nil, err }
+        
+        valueTok, err := p.expect(lexer.INT)
+        if err != nil { return nil, err }
+        
+        // parse value
+        value, err := strconv.ParseInt(valueTok.Lex, 10, 64)
+        if err != nil { return nil, fmt.Errorf("invalid enum value %s", valueTok.Lex) }
+        
+        values = append(values, ast.EnumValue{
+            Name:  enumNameTok.Lex,
+            Value: value,
+        })
+        
+        if p.tok.Type == lexer.COMMA {
+            p.next()
+        } else if p.tok.Type != lexer.RBRACE {
+            return nil, fmt.Errorf("expected ',' or '}' at %d:%d", p.tok.Line, p.tok.Col)
+        }
+    }
+    
+    if _, err := p.expect(lexer.RBRACE); err != nil { return nil, err }
+    if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
+    
+    return &ast.EnumDecl{Name: nameTok.Lex, Values: values}, nil
+}
+
+func (p *Parser) parseTypedefDecl() (ast.Decl, error) {
+    // typedef <type> [*]* name;
+    if _, err := p.expect(lexer.KW_TYPEDEF); err != nil { return nil, err }
+    
+    var baseType ast.BasicType
+    if p.tok.Type == lexer.KW_INT {
+        baseType = ast.BTInt
+    } else if p.tok.Type == lexer.KW_CHAR {
+        baseType = ast.BTChar
+    } else {
+        return nil, fmt.Errorf("only int/char base types supported in typedef at %d:%d", p.tok.Line, p.tok.Col)
+    }
+    p.next()
+    
+    // optional pointer stars
+    ptr := false
+    for p.tok.Type == lexer.STAR { p.next(); ptr = true }
+    
+    nameTok, err := p.expect(lexer.IDENT)
+    if err != nil { return nil, err }
+    
+    if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
+    
+    return &ast.TypedefDecl{Name: nameTok.Lex, Typ: baseType, Ptr: ptr}, nil
 }
