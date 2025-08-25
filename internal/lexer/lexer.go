@@ -75,7 +75,7 @@ func (l *Lexer) Next() Token {
     case ',':
         tok.Type, tok.Lex = COMMA, string(ch); l.read()
     case '=':
-        tok.Type, tok.Lex = ASSIGN, string(ch); l.read()
+        if l.peek() == '=' { l.read(); tok.Type, tok.Lex = EQEQ, "=="; l.read() } else { tok.Type, tok.Lex = ASSIGN, string(ch); l.read() }
     case '+':
         tok.Type, tok.Lex = PLUS, string(ch); l.read()
     case '-':
@@ -84,6 +84,12 @@ func (l *Lexer) Next() Token {
         tok.Type, tok.Lex = STAR, string(ch); l.read()
     case '/':
         tok.Type, tok.Lex = SLASH, string(ch); l.read()
+    case '!':
+        if l.peek() == '=' { l.read(); tok.Type, tok.Lex = NEQ, "!="; l.read() } else { tok.Type, tok.Lex = ILLEGAL, string(ch); l.read() }
+    case '<':
+        if l.peek() == '=' { l.read(); tok.Type, tok.Lex = LE, "<="; l.read() } else { tok.Type, tok.Lex = LT, "<"; l.read() }
+    case '>':
+        if l.peek() == '=' { l.read(); tok.Type, tok.Lex = GE, ">="; l.read() } else { tok.Type, tok.Lex = GT, ">"; l.read() }
     default:
         if unicode.IsLetter(ch) || ch == '_' {
             startLine, startCol := l.line, l.col
@@ -98,6 +104,13 @@ func (l *Lexer) Next() Token {
             switch lex {
             case "int": tok.Type = KW_INT
             case "return": tok.Type = KW_RETURN
+            case "if": tok.Type = KW_IF
+            case "else": tok.Type = KW_ELSE
+            case "while": tok.Type = KW_WHILE
+            case "for": tok.Type = KW_FOR
+            case "do": tok.Type = KW_DO
+            case "break": tok.Type = KW_BREAK
+            case "continue": tok.Type = KW_CONTINUE
             default:
                 tok.Type = IDENT
             }
@@ -119,4 +132,3 @@ func (l *Lexer) Next() Token {
     }
     return tok
 }
-

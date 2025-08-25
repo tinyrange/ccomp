@@ -14,6 +14,13 @@ const (
     // Keywords
     KW_INT
     KW_RETURN
+    KW_IF
+    KW_ELSE
+    KW_WHILE
+    KW_FOR
+    KW_DO
+    KW_BREAK
+    KW_CONTINUE
 
     // Symbols
     LPAREN // (
@@ -28,6 +35,14 @@ const (
     MINUS // -
     STAR  // *
     SLASH // /
+
+    // Comparison
+    EQEQ   // ==
+    NEQ    // !=
+    LT     // <
+    LE     // <=
+    GT     // >
+    GE     // >=
 )
 
 type Token struct {
@@ -38,4 +53,3 @@ type Token struct {
 }
 
 func (t Token) Is(op TokenType) bool { return t.Type == op }
-

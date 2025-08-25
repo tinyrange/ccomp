@@ -12,6 +12,11 @@ type allocation struct {
 }
 
 func allocateRegisters(f *ir.Function) allocation {
+    // Conservative: if function has multiple basic blocks, skip register allocation
+    // to avoid incorrect live range analysis across control flow for now.
+    if len(f.Blocks) > 1 {
+        return allocation{regOf: map[ir.ValueID]string{}}
+    }
     // Flatten instructions
     var instrs []ir.Instr
     for _, b := range f.Blocks { instrs = append(instrs, b.Instrs...) }
@@ -80,4 +85,3 @@ func allocateRegisters(f *ir.Function) allocation {
     _ = n
     return alloc
 }
-

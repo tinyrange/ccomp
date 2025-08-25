@@ -34,6 +34,39 @@ func (*DeclStmt) isStmt() {}
 type AssignStmt struct { Name string; Value Expr }
 func (*AssignStmt) isStmt() {}
 
+type IfStmt struct {
+    Cond Expr
+    Then *BlockStmt
+    Else *BlockStmt
+}
+func (*IfStmt) isStmt() {}
+
+type WhileStmt struct {
+    Cond Expr
+    Body *BlockStmt
+}
+func (*WhileStmt) isStmt() {}
+
+type ForStmt struct {
+    Init Stmt // may be nil
+    Cond Expr // may be nil (treated as true)
+    Post Stmt // may be nil
+    Body *BlockStmt
+}
+func (*ForStmt) isStmt() {}
+
+type DoWhileStmt struct {
+    Body *BlockStmt
+    Cond Expr
+}
+func (*DoWhileStmt) isStmt() {}
+
+type BreakStmt struct{}
+func (*BreakStmt) isStmt() {}
+
+type ContinueStmt struct{}
+func (*ContinueStmt) isStmt() {}
+
 type Expr interface{ isExpr() }
 
 type Ident struct { Name string }
@@ -51,5 +84,10 @@ const (
     OpSub
     OpMul
     OpDiv
+    OpEq
+    OpNe
+    OpLt
+    OpLe
+    OpGt
+    OpGe
 )
-

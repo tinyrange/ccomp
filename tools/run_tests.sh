@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+shopt -s nullglob
 
 GOCACHE="${GOCACHE:-$(pwd)/.cache/go-build}"
 GOMODCACHE="${GOMODCACHE:-$(pwd)/.cache/gomod}"
@@ -16,47 +17,53 @@ rm -rf "$tmpdir" && mkdir -p "$tmpdir"
 trap 'rm -rf "$tmpdir"' EXIT
 
 for c in tests/*.c; do
-  (( total++ ))
+  (( ++total ))
   name=$(basename "$c")
   first=$(head -n1 "$c")
-  expect_type=$(echo "$first" | awk '{print $2}')
-  expect_val=$(echo "$first" | awk '{print $3}')
+  # Format: // EXPECT: EXIT <n>  OR  // EXPECT: COMPILE-FAIL
+  expect_type=$(echo "$first" | awk '{print $3}')
+  expect_val=$(echo "$first" | awk '{print $4}')
   s="$tmpdir/${name%.c}.s"
   bin="$tmpdir/${name%.c}.bin"
 
   if [[ "$expect_type" == "EXIT" ]]; then
     if ! ./ccomp -o "$s" "$c" > "$tmpdir/$name.log" 2>&1; then
       echo "FAIL $name (expected EXIT $expect_val): compile error"
-      (( fail++ ))
+      (( ++fail ))
       continue
     fi
     if ! gcc -nostdlib "$s" runtime/start_linux_amd64.s -o "$bin" >> "$tmpdir/$name.log" 2>&1; then
       echo "FAIL $name (link error)"
-      (( fail++ ))
+      (( ++fail ))
       continue
     fi
     set +e
-    "$bin"
+    tools/with_timeout.sh 1 "$bin"
     code=$?
     set -e
+    if [[ "$code" == "124" ]]; then
+      echo "FAIL $name (timeout)"
+      (( ++fail ))
+      continue
+    fi
     if [[ "$code" == "$expect_val" ]]; then
       echo "PASS $name (exit=$code)"
-      (( pass++ ))
+      (( ++pass ))
     else
       echo "FAIL $name (exit=$code expected=$expect_val)"
-      (( fail++ ))
+      (( ++fail ))
     fi
   elif [[ "$expect_type" == "COMPILE-FAIL" ]]; then
     if ./ccomp -o "$s" "$c" > "$tmpdir/$name.log" 2>&1; then
       echo "FAIL $name (expected COMPILE-FAIL, compiled successfully)"
-      (( fail++ ))
+      (( ++fail ))
     else
       echo "PASS $name (compile-fail)"
-      (( pass++ ))
+      (( ++pass ))
     fi
   else
     echo "Unknown expectation on $name: $first"
-    (( fail++ ))
+    (( ++fail ))
   fi
 done
 

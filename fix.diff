@@ -1,0 +1,25 @@
+--- a/tools/run-tests.sh
++++ b/tools/run-tests.sh
+@@
+	set -euo pipefail
++shopt -s nullglob
+@@
+-for c in tests/*.c; do
+-  (( total++ ))
++for c in tests/*.c; do
++  (( ++total ))
+@@
+-      (( fail++ ))
++      (( ++fail ))
+@@
+-      (( pass++ ))
++      (( ++pass ))
+@@
+-      (( fail++ ))
++      (( ++fail ))
+@@
+-      (( pass++ ))
++      (( ++pass ))
+@@
+-    (( fail++ ))
++    (( ++fail ))

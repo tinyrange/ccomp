@@ -135,6 +135,34 @@ func emitFunc(b *strings.Builder, f *ir.Function) error {
                     off := slotOffset(ins.Res, frameSize)
                     fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", off)
                 }
+            case ir.OpEq, ir.OpNe, ir.OpLt, ir.OpLe, ir.OpGt, ir.OpGe:
+                // Compute comparison result 0/1
+                // Load lhs into rax, rhs into rcx/immediate
+                lhs := ins.Val.Args[0]
+                rhs := ins.Val.Args[1]
+                if lr, ok := alloc.regOf[lhs]; ok {
+                    fmt.Fprintf(b, "  mov %s, %%rax\n", lr)
+                } else {
+                    offL := slotOffset(lhs, frameSize)
+                    fmt.Fprintf(b, "  mov %d(%%rbp), %%rax\n", offL)
+                }
+                if cst, isC := isConst(bb, rhs); isC {
+                    fmt.Fprintf(b, "  cmp $%d, %%rax\n", cst)
+                } else if rr, ok := alloc.regOf[rhs]; ok {
+                    fmt.Fprintf(b, "  cmp %s, %%rax\n", rr)
+                } else {
+                    offR := slotOffset(rhs, frameSize)
+                    fmt.Fprintf(b, "  cmp %d(%%rbp), %%rax\n", offR)
+                }
+                cc := map[ir.Op]string{ir.OpEq: "e", ir.OpNe: "ne", ir.OpLt: "l", ir.OpLe: "le", ir.OpGt: "g", ir.OpGe: "ge"}[ins.Val.Op]
+                fmt.Fprintf(b, "  set%s %%al\n", cc)
+                b.WriteString("  movzx %al, %rax\n")
+                if r, ok := alloc.regOf[ins.Res]; ok {
+                    fmt.Fprintf(b, "  mov %%rax, %s\n", r)
+                } else {
+                    off := slotOffset(ins.Res, frameSize)
+                    fmt.Fprintf(b, "  mov %%rax, %d(%%rbp)\n", off)
+                }
             case ir.OpParam:
                 // already spilled in prologue
             case ir.OpRet:

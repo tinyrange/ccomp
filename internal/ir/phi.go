@@ -27,7 +27,7 @@ func PhiEliminate(f *Function) {
                 src := phi.Val.Args[pi]
                 dst := phi.Res
                 // copy src -> dst
-                ip.Instrs = append(ip.Instrs, Instr{Res: dst, Val: Value{Op: OpCopy, Args: []ValueID{src}}})
+                insertBeforeTerminator(ip, Instr{Res: dst, Val: Value{Op: OpCopy, Args: []ValueID{src}}})
             }
             // If we created a split block, add jump to successor
             if ip != pred {
@@ -60,11 +60,46 @@ func splitCriticalEdge(f *Function, p, s *BasicBlock) *BasicBlock {
     for _, x := range s.Preds { if x != p { newPreds = append(newPreds, x) } }
     s.Preds = newPreds
     f.addEdge(nb, s)
+
+    // Rewrite terminator in p to target nb instead of s
+    if len(p.Instrs) > 0 {
+        tiS := blockIndexOf(f, s)
+        tiN := blockIndexOf(f, nb)
+        last := &p.Instrs[len(p.Instrs)-1]
+        switch last.Val.Op {
+        case OpJmp:
+            if len(last.Val.Args) == 1 && int(last.Val.Args[0]) == tiS {
+                last.Val.Args[0] = ValueID(tiN)
+            }
+        case OpJnz:
+            if len(last.Val.Args) == 3 {
+                if int(last.Val.Args[1]) == tiS { last.Val.Args[1] = ValueID(tiN) }
+                if int(last.Val.Args[2]) == tiS { last.Val.Args[2] = ValueID(tiN) }
+            }
+        }
+    }
     return nb
+}
+
+func insertBeforeTerminator(b *BasicBlock, ins Instr) {
+    n := len(b.Instrs)
+    if n == 0 {
+        b.Instrs = append(b.Instrs, ins)
+        return
+    }
+    lastOp := b.Instrs[n-1].Val.Op
+    if lastOp == OpJmp || lastOp == OpJnz || lastOp == OpRet {
+        // insert before last
+        tmp := append([]Instr(nil), b.Instrs[:n-1]...)
+        tmp = append(tmp, ins)
+        tmp = append(tmp, b.Instrs[n-1])
+        b.Instrs = tmp
+        return
+    }
+    b.Instrs = append(b.Instrs, ins)
 }
 
 func blockIndexOf(f *Function, b *BasicBlock) int {
     for i, bb := range f.Blocks { if bb == b { return i } }
     return -1
 }
-

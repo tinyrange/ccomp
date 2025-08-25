@@ -107,6 +107,88 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
         return &ast.DeclStmt{Name: nameTok.Lex, Init: init}, nil
     case lexer.LBRACE:
         return p.parseBlock()
+    case lexer.KW_IF:
+        p.next()
+        if _, err := p.expect(lexer.LPAREN); err != nil { return nil, err }
+        cond, err := p.parseExpr()
+        if err != nil { return nil, err }
+        if _, err := p.expect(lexer.RPAREN); err != nil { return nil, err }
+        thenBlk, err := p.parseStmt()
+        if err != nil { return nil, err }
+        var thenBody *ast.BlockStmt
+        if tb, ok := thenBlk.(*ast.BlockStmt); ok { thenBody = tb } else { thenBody = &ast.BlockStmt{Stmts: []ast.Stmt{thenBlk}} }
+        var elseBody *ast.BlockStmt
+        if p.tok.Type == lexer.KW_ELSE {
+            p.next()
+            elseStmt, err := p.parseStmt()
+            if err != nil { return nil, err }
+            if eb, ok := elseStmt.(*ast.BlockStmt); ok { elseBody = eb } else { elseBody = &ast.BlockStmt{Stmts: []ast.Stmt{elseStmt}} }
+        }
+        return &ast.IfStmt{Cond: cond, Then: thenBody, Else: elseBody}, nil
+    case lexer.KW_WHILE:
+        p.next()
+        if _, err := p.expect(lexer.LPAREN); err != nil { return nil, err }
+        cond, err := p.parseExpr()
+        if err != nil { return nil, err }
+        if _, err := p.expect(lexer.RPAREN); err != nil { return nil, err }
+        body, err := p.parseStmt()
+        if err != nil { return nil, err }
+        var b *ast.BlockStmt
+        if bb, ok := body.(*ast.BlockStmt); ok { b = bb } else { b = &ast.BlockStmt{Stmts: []ast.Stmt{body}} }
+        return &ast.WhileStmt{Cond: cond, Body: b}, nil
+    case lexer.KW_FOR:
+        p.next()
+        if _, err := p.expect(lexer.LPAREN); err != nil { return nil, err }
+        // init
+        var init ast.Stmt
+        if p.tok.Type != lexer.SEMI {
+            s, err := p.parseForInitOrExprNoSemi()
+            if err != nil { return nil, err }
+            init = s
+        }
+        if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
+        // cond
+        var cond ast.Expr
+        if p.tok.Type != lexer.SEMI {
+            e, err := p.parseExpr()
+            if err != nil { return nil, err }
+            cond = e
+        }
+        if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
+        // post
+        var post ast.Stmt
+        if p.tok.Type != lexer.RPAREN {
+            s, err := p.parseForInitOrExprNoSemi()
+            if err != nil { return nil, err }
+            post = s
+        }
+        if _, err := p.expect(lexer.RPAREN); err != nil { return nil, err }
+        body, err := p.parseStmt()
+        if err != nil { return nil, err }
+        var b *ast.BlockStmt
+        if bb, ok := body.(*ast.BlockStmt); ok { b = bb } else { b = &ast.BlockStmt{Stmts: []ast.Stmt{body}} }
+        return &ast.ForStmt{Init: init, Cond: cond, Post: post, Body: b}, nil
+    case lexer.KW_DO:
+        p.next()
+        body, err := p.parseStmt()
+        if err != nil { return nil, err }
+        var b *ast.BlockStmt
+        if bb, ok := body.(*ast.BlockStmt); ok { b = bb } else { b = &ast.BlockStmt{Stmts: []ast.Stmt{body}} }
+        if _, err := p.expect(lexer.KW_WHILE); err != nil { return nil, err }
+        if _, err := p.expect(lexer.LPAREN); err != nil { return nil, err }
+        cond, err := p.parseExpr()
+        if err != nil { return nil, err }
+        if _, err := p.expect(lexer.RPAREN); err != nil { return nil, err }
+        if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
+        return &ast.DoWhileStmt{Body: b, Cond: cond}, nil
+    case lexer.KW_BREAK:
+        p.next()
+        if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
+        return &ast.BreakStmt{}, nil
+    case lexer.KW_CONTINUE:
+        p.next()
+        if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
+        return &ast.ContinueStmt{}, nil
     case lexer.IDENT:
         // assignment or expr statement
         // Try lookahead '='
@@ -120,9 +202,9 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
             return &ast.AssignStmt{Name: id.Lex, Value: v}, nil
         }
         // rollback: treat IDENT as start of primary in expr
-        // We simulate rollback by creating an Ident and parsing rest via parseExprTail
+        // Continue parsing the rest of the expression after this primary
         left := &ast.Ident{Name: id.Lex}
-        e, err := p.parseExprTail(left)
+        e, err := p.parseAfterPrimary(left)
         if err != nil { return nil, err }
         if _, err := p.expect(lexer.SEMI); err != nil { return nil, err }
         return &ast.ExprStmt{X: e}, nil
@@ -134,17 +216,18 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
     }
 }
 
-// Expr grammar:
-// expr = term { (+|-) term }
-// term = factor { (*|/) factor }
-// factor = IDENT | INT | '(' expr ')'
+// Expr grammar with precedence:
+// expr = equality
+// equality = relational { (==|!=) relational }
+// relational = add { (<|<=|>|>=) add }
+// add = mul { (+|-) mul }
+// mul = primary { (*|/) primary }
+// primary = IDENT | INT | '(' expr ')'
 func (p *Parser) parseExpr() (ast.Expr, error) {
-    left, err := p.parseTerm()
-    if err != nil { return nil, err }
-    return p.parseExprTail(left)
+    return p.parseEquality()
 }
 
-func (p *Parser) parseExprTail(left ast.Expr) (ast.Expr, error) {
+func (p *Parser) parseAdd(left ast.Expr) (ast.Expr, error) {
     for p.tok.Type == lexer.PLUS || p.tok.Type == lexer.MINUS {
         op := p.tok.Type; p.next()
         right, err := p.parseTerm()
@@ -188,13 +271,113 @@ func (p *Parser) parseFactor() (ast.Expr, error) {
     }
 }
 
+func (p *Parser) parseRelational() (ast.Expr, error) {
+    left, err := p.parseTerm()
+    if err != nil { return nil, err }
+    for p.tok.Type == lexer.LT || p.tok.Type == lexer.LE || p.tok.Type == lexer.GT || p.tok.Type == lexer.GE {
+        op := p.tok.Type; p.next()
+        right, err := p.parseTerm()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: binOpFromToken(op), Left: left, Right: right}
+    }
+    return left, nil
+}
+
+func (p *Parser) parseEquality() (ast.Expr, error) {
+    left, err := p.parseRelational()
+    if err != nil { return nil, err }
+    for p.tok.Type == lexer.EQEQ || p.tok.Type == lexer.NEQ {
+        op := p.tok.Type; p.next()
+        right, err := p.parseRelational()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: binOpFromToken(op), Left: left, Right: right}
+    }
+    return p.parseAdd(left)
+}
+
+// parse a simple statement used in for-init/post without trailing semicolon
+func (p *Parser) parseForInitOrExprNoSemi() (ast.Stmt, error) {
+    switch p.tok.Type {
+    case lexer.KW_INT:
+        p.next()
+        nameTok, err := p.expect(lexer.IDENT)
+        if err != nil { return nil, err }
+        var init ast.Expr
+        if p.tok.Type == lexer.ASSIGN {
+            p.next()
+            e, err := p.parseExpr()
+            if err != nil { return nil, err }
+            init = e
+        }
+        return &ast.DeclStmt{Name: nameTok.Lex, Init: init}, nil
+    case lexer.IDENT:
+        id := p.tok
+        p.next()
+        if p.tok.Type == lexer.ASSIGN {
+            p.next()
+            e, err := p.parseExpr()
+            if err != nil { return nil, err }
+            return &ast.AssignStmt{Name: id.Lex, Value: e}, nil
+        }
+        // treat as expression statement starting with this ident
+        left := &ast.Ident{Name: id.Lex}
+        e, err := p.parseAfterPrimary(left)
+        if err != nil { return nil, err }
+        return &ast.ExprStmt{X: e}, nil
+    default:
+        // expression
+        e, err := p.parseExpr()
+        if err != nil { return nil, err }
+        return &ast.ExprStmt{X: e}, nil
+    }
+}
+
+// Continue parsing after an already-read primary expression (IDENT/INT/(...)).
+func (p *Parser) parseAfterPrimary(left ast.Expr) (ast.Expr, error) {
+    // handle * and /
+    for p.tok.Type == lexer.STAR || p.tok.Type == lexer.SLASH {
+        op := p.tok.Type; p.next()
+        right, err := p.parseFactor()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: binOpFromToken(op), Left: left, Right: right}
+    }
+    // handle + and -
+    for p.tok.Type == lexer.PLUS || p.tok.Type == lexer.MINUS {
+        op := p.tok.Type; p.next()
+        right, err := p.parseTerm()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: binOpFromToken(op), Left: left, Right: right}
+    }
+    // relational
+    for p.tok.Type == lexer.LT || p.tok.Type == lexer.LE || p.tok.Type == lexer.GT || p.tok.Type == lexer.GE {
+        op := p.tok.Type; p.next()
+        right, err := p.parseAdd(left)
+        if err != nil { return nil, err }
+        // Note: parseAdd ignores its left, so rebuild properly
+        left = &ast.BinaryExpr{Op: binOpFromToken(op), Left: left, Right: right}
+    }
+    // equality
+    for p.tok.Type == lexer.EQEQ || p.tok.Type == lexer.NEQ {
+        op := p.tok.Type; p.next()
+        right, err := p.parseRelational()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: binOpFromToken(op), Left: left, Right: right}
+    }
+    return left, nil
+}
+
 func binOpFromToken(t lexer.TokenType) ast.BinOp {
     switch t {
     case lexer.PLUS: return ast.OpAdd
     case lexer.MINUS: return ast.OpSub
     case lexer.STAR: return ast.OpMul
     case lexer.SLASH: return ast.OpDiv
+    case lexer.EQEQ: return ast.OpEq
+    case lexer.NEQ: return ast.OpNe
+    case lexer.LT: return ast.OpLt
+    case lexer.LE: return ast.OpLe
+    case lexer.GT: return ast.OpGt
+    case lexer.GE: return ast.OpGe
     default: return ast.OpAdd
     }
 }
-
