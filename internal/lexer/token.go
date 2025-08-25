@@ -38,8 +38,10 @@ const (
 
 	PLUS  // +
 	MINUS // -
-	STAR  // *
-	SLASH // /
+    STAR  // *
+    SLASH // /
+    ANDAND // &&
+    OROR   // ||
 
 	// Comparison
 	EQEQ // ==

@@ -102,6 +102,8 @@ const (
     OpLe
     OpGt
     OpGe
+    OpLAnd
+    OpLOr
 )
 
 type CallExpr struct {

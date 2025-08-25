@@ -82,7 +82,8 @@ type Instr struct {
 }
 
 func (f *Function) newBlock(name string) *BasicBlock {
-    b := &BasicBlock{Name: name}
+    // Ensure unique label names for codegen by appending index
+    b := &BasicBlock{Name: fmt.Sprintf("%s_%d", name, len(f.Blocks))}
     f.Blocks = append(f.Blocks, b)
     if f.entry == nil { f.entry = b }
     return b
@@ -322,6 +323,10 @@ func (c *buildCtx) buildExpr(e ast.Expr) (ValueID, error) {
             return c.add(OpGt, l, r), nil
         case ast.OpGe:
             return c.add(OpGe, l, r), nil
+        case ast.OpLAnd:
+            return c.buildLogical(true, e.Left, e.Right)
+        case ast.OpLOr:
+            return c.buildLogical(false, e.Left, e.Right)
         }
     case *ast.CallExpr:
         // Evaluate args
@@ -352,6 +357,66 @@ func (c *buildCtx) buildExpr(e ast.Expr) (ValueID, error) {
         }
     }
     return 0, fmt.Errorf("unsupported expr")
+}
+
+func (c *buildCtx) buildLogical(isAnd bool, left, right ast.Expr) (ValueID, error) {
+    // Evaluate left
+    l, err := c.buildExpr(left)
+    if err != nil { return 0, err }
+    f := c.f
+    rightB := f.newBlock("log.right")
+    endB := f.newBlock("log.end")
+    // Prepare result temp var
+    tmp := fmt.Sprintf("$t%d", c.nextID)
+    if isAnd {
+        // default false
+        c.writeVar(tmp, c.b, c.iconst(0))
+        // if l!=0 -> right, else -> end
+        ri := blockIndexOf(f, rightB)
+        ei := blockIndexOf(f, endB)
+        c.b.Instrs = append(c.b.Instrs, Instr{Res: -1, Val: Value{Op: OpJnz, Args: []ValueID{l, ValueID(ri), ValueID(ei)}}})
+        f.addEdge(c.b, rightB)
+        f.addEdge(c.b, endB)
+        // right path
+        c.b = rightB
+        r, err := c.buildExpr(right)
+        if err != nil { return 0, err }
+        one := c.iconst(0)
+        one = c.add(OpNe, r, one)
+        c.writeVar(tmp, c.b, one)
+        // jump to end
+        ei2 := blockIndexOf(f, endB)
+        c.b.Instrs = append(c.b.Instrs, Instr{Res: -1, Val: Value{Op: OpJmp, Args: []ValueID{ValueID(ei2)}}})
+        f.addEdge(c.b, endB)
+    } else {
+        // OR: default true
+        c.writeVar(tmp, c.b, c.iconst(1))
+        // if l!=0 -> end, else -> right
+        ri := blockIndexOf(f, rightB)
+        ei := blockIndexOf(f, endB)
+        // Need cond != 0
+        // Use l directly for jnz (nonzero true)
+        c.b.Instrs = append(c.b.Instrs, Instr{Res: -1, Val: Value{Op: OpJnz, Args: []ValueID{l, ValueID(ei), ValueID(ri)}}})
+        f.addEdge(c.b, endB)
+        f.addEdge(c.b, rightB)
+        // right path
+        c.b = rightB
+        r, err := c.buildExpr(right)
+        if err != nil { return 0, err }
+        one := c.iconst(0)
+        one = c.add(OpNe, r, one)
+        c.writeVar(tmp, c.b, one)
+        // jump to end
+        ei2 := blockIndexOf(f, endB)
+        c.b.Instrs = append(c.b.Instrs, Instr{Res: -1, Val: Value{Op: OpJmp, Args: []ValueID{ValueID(ei2)}}})
+        f.addEdge(c.b, endB)
+    }
+    // seal end and read result
+    c.sealBlock(endB)
+    c.b = endB
+    v, err := c.readVar(tmp, endB)
+    if err != nil { return 0, err }
+    return v, nil
 }
 
 func (c *buildCtx) buildIf(s *ast.IfStmt) error {

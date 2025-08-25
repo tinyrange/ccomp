@@ -77,7 +77,9 @@ func (l *Lexer) Next() Token {
     case ':':
         tok.Type, tok.Lex = COLON, string(ch); l.read()
     case '&':
-        tok.Type, tok.Lex = AMP, string(ch); l.read()
+        if l.peek() == '&' { l.read(); tok.Type, tok.Lex = ANDAND, "&&"; l.read() } else { tok.Type, tok.Lex = AMP, string(ch); l.read() }
+    case '|':
+        if l.peek() == '|' { l.read(); tok.Type, tok.Lex = OROR, "||"; l.read() } else { tok.Type, tok.Lex = ILLEGAL, string(ch); l.read() }
     case '=':
         if l.peek() == '=' { l.read(); tok.Type, tok.Lex = EQEQ, "=="; l.read() } else { tok.Type, tok.Lex = ASSIGN, string(ch); l.read() }
     case '+':

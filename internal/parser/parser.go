@@ -289,8 +289,30 @@ func (p *Parser) parseStmt() (ast.Stmt, error) {
 // add = mul { (+|-) mul }
 // mul = primary { (*|/) primary }
 // primary = IDENT | INT | '(' expr ')'
-func (p *Parser) parseExpr() (ast.Expr, error) {
-    return p.parseEquality()
+func (p *Parser) parseExpr() (ast.Expr, error) { return p.parseLogicalOr() }
+
+func (p *Parser) parseLogicalOr() (ast.Expr, error) {
+    left, err := p.parseLogicalAnd()
+    if err != nil { return nil, err }
+    for p.tok.Type == lexer.OROR {
+        p.next()
+        right, err := p.parseLogicalAnd()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: ast.OpLOr, Left: left, Right: right}
+    }
+    return left, nil
+}
+
+func (p *Parser) parseLogicalAnd() (ast.Expr, error) {
+    left, err := p.parseEquality()
+    if err != nil { return nil, err }
+    for p.tok.Type == lexer.ANDAND {
+        p.next()
+        right, err := p.parseEquality()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: ast.OpLAnd, Left: left, Right: right}
+    }
+    return left, nil
 }
 
 func (p *Parser) parseAdd(left ast.Expr) (ast.Expr, error) {
@@ -461,6 +483,19 @@ func (p *Parser) parseAfterPrimary(left ast.Expr) (ast.Expr, error) {
         if err != nil { return nil, err }
         left = &ast.BinaryExpr{Op: binOpFromToken(op), Left: left, Right: right}
     }
+    // logical and/or
+    for p.tok.Type == lexer.ANDAND {
+        p.next()
+        right, err := p.parseEquality()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: ast.OpLAnd, Left: left, Right: right}
+    }
+    for p.tok.Type == lexer.OROR {
+        p.next()
+        right, err := p.parseLogicalAnd()
+        if err != nil { return nil, err }
+        left = &ast.BinaryExpr{Op: ast.OpLOr, Left: left, Right: right}
+    }
     return left, nil
 }
 
@@ -476,6 +511,8 @@ func binOpFromToken(t lexer.TokenType) ast.BinOp {
     case lexer.LE: return ast.OpLe
     case lexer.GT: return ast.OpGt
     case lexer.GE: return ast.OpGe
+    case lexer.ANDAND: return ast.OpLAnd
+    case lexer.OROR: return ast.OpLOr
     default: return ast.OpAdd
     }
 }
