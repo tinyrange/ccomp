@@ -16,8 +16,8 @@ e2e: run
 	./a.out; code=$$?; echo "exit=$$code"; test $$code -eq 14
 
 clean:
-	rm -f ccomp out.s
-	rm -rf .cache
+	rm -f ccomp out.s a.out .test.s .test.bin .t .t.s .w .w.s
+	rm -rf .cache .test-tmp
 
 test:
 	GOCACHE=$(GOCACHE) GOMODCACHE=$(GOMODCACHE) bash tools/run_tests.sh

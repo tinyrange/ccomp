@@ -2,4 +2,10 @@
 ccomp
 out.s
 a.out
-
+.test.s
+.test.bin
+.test-tmp/
+.t
+.t.s
+.w
+.w.s
