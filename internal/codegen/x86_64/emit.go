@@ -27,10 +27,17 @@ func EmitModule(m *ir.Module) (string, error) {
         for _, g := range m.Globals {
             fmt.Fprintf(&b, ".globl %s\n%s:\n", g.Name, g.Name)
             if g.Array {
-                // Reserve 8 bytes per element zero-initialized
-                fmt.Fprintf(&b, "  .zero %d\n", g.Length*8)
+                // Reserve elementSize * Length bytes zero-initialized
+                esz := g.ElemSize
+                if esz == 0 { esz = 8 }
+                fmt.Fprintf(&b, "  .zero %d\n", g.Length*esz)
             } else {
-                fmt.Fprintf(&b, "  .quad %d\n", g.Init)
+                if g.ElemSize == 1 {
+                    // byte scalar
+                    fmt.Fprintf(&b, "  .byte %d\n", int(g.Init)&0xFF)
+                } else {
+                    fmt.Fprintf(&b, "  .quad %d\n", g.Init)
+                }
             }
         }
     }

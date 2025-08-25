@@ -82,8 +82,8 @@ func dceFunc(f *Function) {
                 if ins.Val.Op == OpRet { out = append(out, ins); continue }
                 if ins.Res < 0 { out = append(out, ins); continue }
                 // No side effects in Phase 1 ops; can delete if unused
-                // Keep params, calls, and stores
-                if ui.uses[ins.Res] == 0 && ins.Val.Op != OpParam && ins.Val.Op != OpCall && ins.Val.Op != OpStore {
+                // Keep params, calls, and stores (including byte stores)
+                if ui.uses[ins.Res] == 0 && ins.Val.Op != OpParam && ins.Val.Op != OpCall && ins.Val.Op != OpStore && ins.Val.Op != OpStore8 {
                     changed = true
                     continue
                 }

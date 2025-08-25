@@ -121,7 +121,9 @@ func BuildModule(file *ast.File, m *Module) error {
         case *ast.GlobalDecl:
             init := int64(0)
             if gd.Init != nil { init = gd.Init.Value }
-            m.Globals = append(m.Globals, Global{Name: gd.Name, Init: init})
+            esz := 8
+            if gd.Typ == ast.BTChar { esz = 1 }
+            m.Globals = append(m.Globals, Global{Name: gd.Name, Init: init, ElemSize: esz})
         case *ast.GlobalArrayDecl:
             esz := 8
             if gd.Elem == ast.BTChar { esz = 1 }
@@ -279,6 +281,17 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
                 if s.Typ == ast.BTChar { c.varTypes[s.Name] = ty.ByteT() } else { c.varTypes[s.Name] = ty.Int() }
             }
         case *ast.AssignStmt:
+            // If assigning to a global (and no local of same name), emit store to global
+            if g, ok := c.lookupGlobal(s.Name); ok {
+                if _, isLocal := c.varTypes[s.Name]; !isLocal {
+                    val, _, err := c.buildExprWithType(s.Value)
+                    if err != nil { return err }
+                    addr := c.newValue(OpGlobalAddr, nil, 0)
+                    c.b.Instrs[len(c.b.Instrs)-1].Val.Sym = g.Name
+                    if g.ElemSize == 1 { c.add(OpStore8, addr, val) } else { c.add(OpStore, addr, val) }
+                    break
+                }
+            }
             v, t, err := c.buildExprWithType(s.Value)
             if err != nil { return err }
             c.writeVar(s.Name, c.b, v)
@@ -402,6 +415,7 @@ func (c *buildCtx) buildExprWithType(e ast.Expr) (ValueID, ty.Type, error) {
                 if g.Name == e.Name {
                     addr := c.newValue(OpGlobalAddr, nil, 0)
                     c.b.Instrs[len(c.b.Instrs)-1].Val.Sym = g.Name
+                    if g.ElemSize == 1 { return c.add(OpLoad8, addr), ty.Int(), nil }
                     return c.add(OpLoad, addr), ty.Int(), nil
                 }
             }
@@ -944,4 +958,11 @@ func (c *buildCtx) buildSwitch(s *ast.SwitchStmt) error {
     c.b = exitB
     c.sealBlock(exitB)
     return nil
+}
+func (c *buildCtx) lookupGlobal(name string) (*Global, bool) {
+    if c.m == nil { return nil, false }
+    for i := range c.m.Globals {
+        if c.m.Globals[i].Name == name { return &c.m.Globals[i], true }
+    }
+    return nil, false
 }
