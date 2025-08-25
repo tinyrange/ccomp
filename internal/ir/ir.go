@@ -121,12 +121,12 @@ func BuildModule(file *ast.File, m *Module) error {
         case *ast.GlobalDecl:
             init := int64(0)
             if gd.Init != nil { init = gd.Init.Value }
-            esz := 8
-            if gd.Typ == ast.BTChar { esz = 1 }
+            globalType := ty.FromBasicType(int(gd.Typ), gd.Ptr)
+            esz := globalType.Size()
             m.Globals = append(m.Globals, Global{Name: gd.Name, Init: init, ElemSize: esz})
         case *ast.GlobalArrayDecl:
-            esz := 8
-            if gd.Elem == ast.BTChar { esz = 1 }
+            elemType := ty.FromBasicType(int(gd.Elem), false)
+            esz := elemType.Size()
             m.Globals = append(m.Globals, Global{Name: gd.Name, Array: true, Length: gd.Size, ElemSize: esz})
         }
     }
@@ -329,8 +329,8 @@ func (c *buildCtx) buildBlock(b *ast.BlockStmt) error {
                 id := c.iconst(0)
                 if i == 0 { base = id }
             }
-            esz := 8
-            if s.Elem == ast.BTChar { esz = 1 }
+            elemType := ty.FromBasicType(int(s.Elem), false)
+            esz := elemType.Size()
             c.arrays[s.Name] = struct{ base ValueID; size int; elemSize int }{base: base, size: s.Size, elemSize: esz}
         case *ast.ArrayAssignStmt:
             // Compute address base + index*8 and store value
@@ -480,7 +480,16 @@ func (c *buildCtx) buildExprWithType(e ast.Expr) (ValueID, ty.Type, error) {
                 }
                 return c.add(OpSub, l, r), lt, nil
             }
-            // ptr - ptr -> bytes difference (not scaled), keep int for now
+            // ptr - ptr -> element count difference (byte diff / element size)
+            if lt.IsPointer() && rt.IsPointer() {
+                byteDiff := c.add(OpSub, l, r)
+                sz := lt.ElemSize()
+                if sz > 1 {
+                    divisor := c.iconst(int64(sz))
+                    return c.add(OpDiv, byteDiff, divisor), ty.Int(), nil
+                }
+                return byteDiff, ty.Int(), nil
+            }
             return c.add(OpSub, l, r), ty.Int(), nil
         case ast.OpMul:
             return c.add(OpMul, l, r), ty.Int(), nil
